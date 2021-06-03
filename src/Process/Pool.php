@@ -10,9 +10,8 @@ use Imi\Swoole\Process\Pool\BeforeStartEventParam;
 use Imi\Swoole\Process\Pool\InitEventParam;
 use Imi\Swoole\Process\Pool\MessageEventParam;
 use Imi\Swoole\Process\Pool\WorkerEventParam;
+use Imi\Swoole\Util\Coroutine;
 use Swoole\Event;
-use Swoole\Process;
-use Swoole\Timer;
 
 class Pool
 {
@@ -21,7 +20,7 @@ class Pool
     /**
      * 工作进程数量.
      */
-    private int $workerNum;
+    private int $workerNum = 0;
 
     /**
      * 工作进程列表
@@ -46,7 +45,7 @@ class Pool
     /**
      * 主进程 PID.
      */
-    private int $masterPID;
+    private int $masterPID = 0;
 
     /**
      * @param int $workerNum
@@ -54,6 +53,30 @@ class Pool
     public function __construct($workerNum)
     {
         $this->workerNum = $workerNum;
+    }
+
+    protected function listenSigChild(): void
+    {
+        Signal::waitCallback(\SIGCHLD, function () {
+            if ($this->workers)
+            {
+                while ($result = Process::wait(false))
+                {
+                    $pid = $result['pid'];
+                    $workerId = $this->workerIdMap[$pid] ?? null;
+                    if (isset($this->workers[$workerId]))
+                    {
+                        $worker = $this->workers[$workerId];
+                        Event::del($worker->pipe);
+                        unset($this->workerIdMap[$worker->pid], $this->workers[$workerId]);
+                    }
+                }
+            }
+            if ($this->working)
+            {
+                $this->listenSigChild();
+            }
+        });
     }
 
     /**
@@ -70,49 +93,66 @@ class Pool
             'pool'  => $this,
         ], $this, BeforeStartEventParam::class);
 
-        Process::signal(\SIGCHLD, function ($sig) {
-            while (!empty($this->workers))
+        $this->listenSigChild();
+
+        imigo(function () {
+            if (Signal::wait(\SIGTERM))
             {
-                foreach ($this->workers as $worker)
+                if ($this->workers)
                 {
-                    $ret = $worker->wait(false);
-                    if ($ret)
+                    $this->working = false;
+                    foreach ($this->workers as $worker)
                     {
-                        $pid = $ret['pid'] ?? null;
-                        $workerId = $this->workerIdMap[$pid] ?? null;
-                        if (null === $workerId)
+                        try
                         {
-                            Log::warning(sprintf('%s: Can not found workerId by pid %s', self::class, $pid));
-                            continue;
+                            Process::kill($worker->pid, \SIGTERM);
+                            if (Event::isset($worker->pipe))
+                            {
+                                Event::del($worker->pipe);
+                            }
                         }
-                        Event::del($this->workers[$workerId]->pipe);
-                        unset($this->workerIdMap[$pid], $this->workers[$workerId]);
-                        if ($this->working)
+                        catch (\Throwable $th)
                         {
-                            $this->startWorker($workerId);
+                            Log::error($th);
                         }
-                        elseif (empty($this->workers))
+                    }
+                    $time = microtime(true);
+                    while ($this->workers)
+                    {
+                        if (microtime(true) - $time > 3)
                         {
-                            Event::exit();
+                            Log::info('Worker exit timeout, forced to terminate');
+                            foreach ($this->workers as $worker)
+                            {
+                                try
+                                {
+                                    Process::kill($worker->pid, \SIGKILL);
+                                }
+                                catch (\Throwable $th)
+                                {
+                                    Log::error($th);
+                                }
+                            }
+                            break;
                         }
+                        foreach ($this->workers as $worker)
+                        {
+                            if ($result = Process::wait(false))
+                            {
+                                $pid = $result['pid'];
+                                $workerId = $this->workerIdMap[$pid] ?? null;
+                                if (isset($this->workers[$workerId]))
+                                {
+                                    $worker = $this->workers[$workerId];
+                                    Event::del($worker->pipe);
+                                    unset($this->workerIdMap[$worker->pid], $this->workers[$workerId]);
+                                }
+                            }
+                        }
+                        usleep(10000);
                     }
                 }
             }
-        });
-
-        Process::signal(\SIGTERM, function () {
-            $this->working = false;
-            foreach ($this->workers as $worker)
-            {
-                Process::kill($worker->pid, \SIGTERM);
-            }
-            Timer::after(3000, function () {
-                Log::info('Worker exit timeout, forced to terminate');
-                foreach ($this->workers as $worker)
-                {
-                    Process::kill($worker->pid, \SIGKILL);
-                }
-            });
         });
 
         for ($i = 0; $i < $this->workerNum; ++$i)
@@ -123,6 +163,45 @@ class Pool
         $this->trigger('Init', [
             'pool'      => $this,
         ], $this, InitEventParam::class);
+    }
+
+    public function wait(bool $blocking = true): bool
+    {
+        $result = true;
+        while ($this->working)
+        {
+            $result = true;
+            for ($i = 0; $i < $this->workerNum; ++$i)
+            {
+                if (isset($this->workers[$i]))
+                {
+                    $worker = $this->workers[$i];
+                    if (Process::kill($worker->pid, 0))
+                    {
+                        $result = false;
+                    }
+                    else
+                    {
+                        Event::del($worker->pipe);
+                        unset($this->workerIdMap[$worker->pid], $this->workers[$i]);
+                    }
+                }
+                else
+                {
+                    $this->startWorker($i);
+                }
+            }
+            if ($blocking)
+            {
+                usleep(10000);
+            }
+            else
+            {
+                break;
+            }
+        }
+
+        return $result;
     }
 
     /**
@@ -144,7 +223,14 @@ class Pool
     {
         foreach ($this->workers as $worker)
         {
-            Process::kill($worker->pid);
+            try
+            {
+                Process::kill($worker->pid);
+            }
+            catch (\Throwable $th)
+            {
+                Log::error($th);
+            }
         }
     }
 
@@ -162,7 +248,14 @@ class Pool
         {
             if (isset($workers[$workerId]))
             {
-                Process::kill($workers[$workerId]->pid);
+                try
+                {
+                    Process::kill($workers[$workerId]->pid);
+                }
+                catch (\Throwable $th)
+                {
+                    Log::error($th);
+                }
             }
             else
             {
@@ -186,7 +279,11 @@ class Pool
         {
             throw new \RuntimeException(sprintf('Can not start worker %s again', $workerId));
         }
-        $worker = new \Imi\Swoole\Process\Process(function (Process $worker) use ($workerId) {
+        $oldEnableDeadlockCheck = Coroutine::getOptions()['enable_deadlock_check'] ?? true;
+        Coroutine::set([
+            'enable_deadlock_check' => false,
+        ]);
+        $worker = new Process(function (Process $worker) use ($workerId) {
             Process::signal(\SIGTERM, function () use ($worker, $workerId) {
                 $this->trigger('WorkerExit', [
                     'pool'      => $this,
@@ -210,12 +307,18 @@ class Pool
             Event::wait();
         });
         $pid = $worker->start();
+        Coroutine::set([
+            'enable_deadlock_check' => $oldEnableDeadlockCheck,
+        ]);
         if (false === $pid)
         {
             throw new \RuntimeException(sprintf('Start worker %s failed', $workerId));
         }
         else
         {
+            $workers[$workerId] = $worker;
+            $this->workerIdMap[$pid] = $workerId;
+
             Event::add($worker->pipe, function ($pipe) use ($worker, $workerId) {
                 $content = $worker->read();
                 if (false === $content || '' === $content)
@@ -232,8 +335,6 @@ class Pool
                     'data'      => $data,
                 ], $this, MessageEventParam::class);
             });
-            $workers[$workerId] = $worker;
-            $this->workerIdMap[$pid] = $workerId;
         }
     }
 }

@@ -172,6 +172,29 @@ class RequestTest extends BaseTest
         $this->assertEquals(md5($content), $file['hash']);
     }
 
+    public function testUpload2(): void
+    {
+        $http = new HttpRequest();
+        $response = $http->post($this->host . 'upload2');
+        $data = $response->json(true);
+        $this->assertEquals('Missing uploaded file: file', $data['message'] ?? null);
+
+        $file = new UploadedFile(basename(__FILE__), MediaType::TEXT_HTML, __FILE__);
+        $http->content([
+            'file'  => $file,
+        ]);
+        $response = $http->post($this->host . 'upload2');
+        $data = $response->json(true);
+
+        $this->assertTrue(isset($data['data']));
+        $file = $data['data'];
+        $content = file_get_contents(__FILE__);
+        $this->assertEquals(basename(__FILE__), $file['clientFilename']);
+        $this->assertEquals(MediaType::TEXT_HTML, $file['clientMediaType']);
+        $this->assertEquals(\strlen($content), $file['size']);
+        $this->assertEquals(md5($content), $file['hash']);
+    }
+
     /**
      * 控制器不在服务器目录下的测试.
      */
@@ -222,6 +245,7 @@ class RequestTest extends BaseTest
         $response = $http->get($uri);
         $data = $response->json(true);
         $this->assertEquals($uri, $data['uri'] ?? null);
+        $this->assertEquals(TEST_APP_URI, $data['appUri'] ?? null);
     }
 
     /**
@@ -293,6 +317,44 @@ class RequestTest extends BaseTest
             'id2'   => 123,
             'id3'   => '123',
         ]), $response->body());
+    }
+
+    /**
+     * Annotation RequestParam.
+     */
+    public function testRequestParam(): void
+    {
+        $http = new HttpRequest();
+        $response = $http->get($this->host . 'requestParam1?id=123');
+        $this->assertEquals(json_encode([
+            'id'    => 123,
+            'id2'   => 123,
+            'id3'   => 'imi 666',
+        ]), $response->body());
+
+        $response = $http->get($this->host . 'requestParam1?id=123&id3=456');
+        $this->assertEquals(json_encode([
+            'id'    => 123,
+            'id2'   => 123,
+            'id3'   => '456',
+        ]), $response->body());
+
+        if (version_compare(\PHP_VERSION, '8.0', '>='))
+        {
+            $response = $http->get($this->host . 'requestParam2?id=123');
+            $this->assertEquals(json_encode([
+                'id'    => 123,
+                'id2'   => 123,
+                'id3'   => 'imi niubi',
+            ]), $response->body());
+
+            $response = $http->get($this->host . 'requestParam2?id=123&id3=456');
+            $this->assertEquals(json_encode([
+                'id'    => 123,
+                'id2'   => 123,
+                'id3'   => '456',
+            ]), $response->body());
+        }
     }
 
     public function testIgnoreCase(): void

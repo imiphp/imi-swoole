@@ -16,14 +16,14 @@ class QueryCurdTest extends QueryCurdBaseTest
      *
      * @var string
      */
-    protected $poolName = 'swooleMysql';
+    protected ?string $poolName = 'swooleMysql';
 
     /**
      * 测试 whereEx 的 SQL.
      *
      * @var string
      */
-    protected $expectedTestWhereExSql = 'select * from `tb_article` where (`id` = :p1 and (`id` in (:p2) ) )';
+    protected $expectedTestWhereExSql = 'select * from `tb_article` where (`id` = :p1 and (`id` in (:p2)))';
 
     /**
      * 测试 JSON 查询的 SQL.

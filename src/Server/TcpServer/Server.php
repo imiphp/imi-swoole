@@ -4,12 +4,10 @@ declare(strict_types=1);
 
 namespace Imi\Swoole\Server\TcpServer;
 
-use Imi\App;
 use Imi\Bean\Annotation\Bean;
+use Imi\Log\Log;
 use Imi\Server\Protocol;
-use Imi\Server\ServerManager;
 use Imi\Swoole\Server\Base;
-use Imi\Swoole\Server\Contract\ISwooleServer;
 use Imi\Swoole\Server\Contract\ISwooleTcpServer;
 use Imi\Swoole\Server\Event\Param\CloseEventParam;
 use Imi\Swoole\Server\Event\Param\ConnectEventParam;
@@ -57,7 +55,7 @@ class Server extends Base implements ISwooleTcpServer
     protected function createServer(): void
     {
         $config = $this->getServerInitConfig();
-        $this->swooleServer = new \Swoole\Server($config['host'], $config['port'], $config['mode'], $config['sockType']);
+        $this->swooleServer = new \Swoole\Server($config['host'], (int) $config['port'], (int) $config['mode'], (int) $config['sockType']);
     }
 
     /**
@@ -65,11 +63,7 @@ class Server extends Base implements ISwooleTcpServer
      */
     protected function createSubServer(): void
     {
-        $config = $this->getServerInitConfig();
-        /** @var ISwooleServer $server */
-        $server = ServerManager::getServer('main', ISwooleServer::class);
-        $this->swooleServer = $server->getSwooleServer();
-        $this->swoolePort = $this->swooleServer->addListener($config['host'], $config['port'], $config['sockType']);
+        parent::createSubServer();
         $configs = &$this->config['configs'];
         foreach (static::SWOOLE_PROTOCOLS as $protocol)
         {
@@ -82,11 +76,14 @@ class Server extends Base implements ISwooleTcpServer
      */
     protected function getServerInitConfig(): array
     {
+        $host = $this->config['host'] ?? '0.0.0.0';
+        $sockType = \Imi\Swoole\Util\Swoole::getTcpSockTypeByHost($host);
+
         return [
-            'host'      => $this->config['host'] ?? '0.0.0.0',
-            'port'      => $this->config['port'] ?? 8080,
-            'sockType'  => isset($this->config['sockType']) ? (\SWOOLE_SOCK_TCP | $this->config['sockType']) : \SWOOLE_SOCK_TCP,
-            'mode'      => $this->config['mode'] ?? \SWOOLE_BASE,
+            'host'      => $host,
+            'port'      => (int) ($this->config['port'] ?? 8080),
+            'sockType'  => isset($this->config['sockType']) ? ($sockType | $this->config['sockType']) : $sockType,
+            'mode'      => (int) ($this->config['mode'] ?? \SWOOLE_BASE),
         ];
     }
 
@@ -95,13 +92,14 @@ class Server extends Base implements ISwooleTcpServer
      */
     protected function __bindEvents(): void
     {
+        $enableSyncConnect = $this->syncConnect && \SWOOLE_BASE === $this->swooleServer->mode;
         $events = $this->config['events'] ?? null;
         if ($event = ($events['connect'] ?? true))
         {
-            $this->swoolePort->on('connect', \is_callable($event) ? $event : function (\Swoole\Server $server, int $fd, int $reactorId) {
+            $this->swoolePort->on('connect', \is_callable($event) ? $event : function (\Swoole\Server $server, int $fd, int $reactorId) use ($enableSyncConnect) {
                 try
                 {
-                    if ($this->syncConnect)
+                    if ($enableSyncConnect)
                     {
                         $channelId = 'connection:' . $fd;
                         $channel = ChannelContainer::getChannel($channelId);
@@ -116,10 +114,9 @@ class Server extends Base implements ISwooleTcpServer
                         'reactorId'       => $reactorId,
                     ], $this, ConnectEventParam::class);
                 }
-                catch (\Throwable $ex)
+                catch (\Throwable $th)
                 {
-                    // @phpstan-ignore-next-line
-                    App::getBean('ErrorLog')->onException($ex);
+                    Log::error($th);
                 }
                 finally
                 {
@@ -138,20 +135,20 @@ class Server extends Base implements ISwooleTcpServer
 
         if ($event = ($events['receive'] ?? true))
         {
-            $this->swoolePort->on('receive', \is_callable($event) ? $event : function (\Swoole\Server $server, int $fd, int $reactorId, string $data) {
+            $this->swoolePort->on('receive', \is_callable($event) ? $event : function (\Swoole\Server $server, int $fd, int $reactorId, string $data) use ($enableSyncConnect) {
                 try
                 {
-                    if (!Worker::isInited())
-                    {
-                        ChannelContainer::pop('workerInit');
-                    }
-                    if ($this->syncConnect)
+                    if ($enableSyncConnect)
                     {
                         $channelId = 'connection:' . $fd;
                         if (ChannelContainer::hasChannel($channelId))
                         {
                             ChannelContainer::pop($channelId);
                         }
+                    }
+                    if (!Worker::isInited())
+                    {
+                        ChannelContainer::pop('workerInit');
                     }
                     $this->trigger('receive', [
                         'server'          => $this,
@@ -160,10 +157,13 @@ class Server extends Base implements ISwooleTcpServer
                         'data'            => $data,
                     ], $this, ReceiveEventParam::class);
                 }
-                catch (\Throwable $ex)
+                catch (\Throwable $th)
                 {
                     // @phpstan-ignore-next-line
-                    App::getBean('ErrorLog')->onException($ex);
+                    if (true !== $this->getBean('TcpErrorHandler')->handle($th))
+                    {
+                        Log::error($th);
+                    }
                 }
             });
         }
@@ -175,9 +175,17 @@ class Server extends Base implements ISwooleTcpServer
 
         if ($event = ($events['close'] ?? true))
         {
-            $this->swoolePort->on('close', \is_callable($event) ? $event : function (\Swoole\Server $server, int $fd, int $reactorId) {
+            $this->swoolePort->on('close', \is_callable($event) ? $event : function (\Swoole\Server $server, int $fd, int $reactorId) use ($enableSyncConnect) {
                 try
                 {
+                    if ($enableSyncConnect)
+                    {
+                        $channelId = 'connection:' . $fd;
+                        if (ChannelContainer::hasChannel($channelId))
+                        {
+                            ChannelContainer::pop($channelId);
+                        }
+                    }
                     if (!Worker::isInited())
                     {
                         ChannelContainer::pop('workerInit');
@@ -188,10 +196,9 @@ class Server extends Base implements ISwooleTcpServer
                         'reactorId'       => $reactorId,
                     ], $this, CloseEventParam::class);
                 }
-                catch (\Throwable $ex)
+                catch (\Throwable $th)
                 {
-                    // @phpstan-ignore-next-line
-                    App::getBean('ErrorLog')->onException($ex);
+                    Log::error($th);
                 }
             });
         }

@@ -14,12 +14,14 @@ class SwooleResponse extends Response
     /**
      * swoole响应对象
      */
-    protected \Swoole\Http\Response $swooleResponse;
+    protected ?\Swoole\Http\Response $swooleResponse = null;
 
     /**
      * 对应的服务器.
      */
-    protected ISwooleServer $serverInstance;
+    protected ?ISwooleServer $serverInstance = null;
+
+    protected bool $emitterWritting = false;
 
     public function __construct(ISwooleServer $server, \Swoole\Http\Response $response)
     {
@@ -84,8 +86,6 @@ class SwooleResponse extends Response
         {
             $swooleResponse->status($this->statusCode);
         }
-
-        return;
     }
 
     /**
@@ -93,10 +93,25 @@ class SwooleResponse extends Response
      */
     public function send(): self
     {
-        $this->sendHeaders();
-        if ($this->isBodyWritable())
+        if ($this->responseBodyEmitter)
         {
-            $this->swooleResponse->end($this->getBody());
+            if ($this->emitterWritting)
+            {
+                return $this;
+            }
+            $this->emitterWritting = true;
+            $this->responseBodyEmitter->init($this, new SwooleEmitHandler($this->swooleResponse));
+            $this->sendHeaders();
+            $this->responseBodyEmitter->send();
+            $this->swooleResponse->end();
+        }
+        else
+        {
+            $this->sendHeaders();
+            if ($this->isBodyWritable())
+            {
+                $this->swooleResponse->end($this->getBody());
+            }
         }
 
         return $this;

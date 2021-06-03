@@ -10,12 +10,18 @@ use Imi\Cron\Contract\IScheduler;
 use Imi\Cron\CronManager;
 use Imi\Cron\Message\AddCron;
 use Imi\Cron\Message\Clear;
+use Imi\Cron\Message\CommonMsg;
+use Imi\Cron\Message\GetRealTasks;
+use Imi\Cron\Message\GetTask;
+use Imi\Cron\Message\HasTask;
+use Imi\Cron\Message\IMessage;
 use Imi\Cron\Message\RemoveCron;
 use Imi\Cron\Message\Result;
-use Imi\Log\ErrorLog;
+use Imi\Event\Event;
 use Imi\Swoole\Process\Annotation\Process;
 use Imi\Swoole\Process\BaseProcess;
-use Swoole\Coroutine\System;
+use Imi\Swoole\Process\Event\Param\PipeMessageEventParam;
+use Swoole\Coroutine\Server\Connection;
 
 /**
  * 定时任务进程.
@@ -30,21 +36,9 @@ class CronProcess extends BaseProcess
     protected IScheduler $scheduler;
 
     /**
-     * @Inject("ErrorLog")
-     */
-    protected ErrorLog $errorLog;
-
-    /**
      * @Inject("CronManager")
      */
     protected ICronManager $cronManager;
-
-    /**
-     * socket 资源.
-     *
-     * @var resource
-     */
-    protected $socket;
 
     /**
      * 是否正在运行.
@@ -53,101 +47,66 @@ class CronProcess extends BaseProcess
 
     public function run(\Swoole\Process $process): void
     {
-        imigo(function () {
-            if (System::waitSignal(\SIGTERM))
+        Event::on(['IMI.MAIN_SERVER.WORKER.EXIT', 'IMI.PROCESS.END'], function () {
+            $this->stop();
+        }, \Imi\Util\ImiPriority::IMI_MIN);
+        Event::on('IMI.PROCESS.PIPE_MESSAGE', function (PipeMessageEventParam $e) {
+            $data = $e->data;
+            if ($data instanceof Result)
             {
-                $this->stop();
+                $this->scheduler->completeTask($data);
+            }
+            elseif ($data instanceof AddCron)
+            {
+                $cronAnnotation = $data->cronAnnotation;
+                $this->cronManager->addCronByAnnotation($cronAnnotation, $data->task);
+            }
+            elseif ($data instanceof RemoveCron)
+            {
+                $this->cronManager->removeCron($data->id);
+            }
+            elseif ($data instanceof Clear)
+            {
+                $this->cronManager->clear();
+            }
+            elseif ($data instanceof GetRealTasks)
+            {
+                // 拿到返回的数据,开启通道传回
+                $this->answerClient($e->connection, $this->cronManager->getRealTasks());
+            }
+            elseif ($data instanceof HasTask)
+            {
+                // 拿到返回的数据,开启通道传回
+                $this->answerClient($e->connection, $this->cronManager->hasTask($data->id));
+            }
+            elseif ($data instanceof GetTask)
+            {
+                // 拿到返回的数据,开启通道传回
+                $this->answerClient($e->connection, $this->cronManager->getTask($data->id));
             }
         });
-        $this->startSocketServer();
-    }
-
-    protected function startSocketServer(): void
-    {
-        $socketFile = $this->cronManager->getSocketFile();
-        if (is_file($socketFile))
-        {
-            unlink($socketFile);
-        }
-        $this->socket = $socket = stream_socket_server('unix://' . $socketFile, $errno, $errstr);
-        if (false === $socket)
-        {
-            throw new \RuntimeException(sprintf('Create unix socket server failed, errno: %s, errstr: %s, file: %s', $errno, $errstr, $socketFile));
-        }
-        $this->running = true;
-        $running = &$this->running;
         $this->startSchedule();
-        // @phpstan-ignore-next-line
-        while ($running)
-        {
-            $arrRead = [$socket];
-            $write = $except = [];
-            if (stream_select($arrRead, $write, $except, 3) > 0)
-            {
-                $conn = stream_socket_accept($socket, 1);
-                if (false === $conn)
-                {
-                    continue;
-                }
-                imigo(function () use ($conn) {
-                    $this->parseConn($conn);
-                    fclose($conn);
-                });
-            }
-        }
-        // @phpstan-ignore-next-line
-        fclose($socket);
     }
 
     /**
-     * 处理连接.
+     * 一个返回数据的socket通道.
      *
-     * @param resource $conn
+     * @param mixed $msg
+     *
+     * @return int|false
      */
-    protected function parseConn($conn): void
+    protected function answerClient(Connection $conn, $msg)
     {
-        $running = &$this->running;
-        $scheduler = $this->scheduler;
-        $errorLog = $this->errorLog;
-        while ($running)
+        if (!$msg instanceof IMessage)
         {
-            try
-            {
-                $meta = fread($conn, 4);
-                if ('' === $meta || false === $meta)
-                {
-                    return;
-                }
-                $length = unpack('N', $meta)[1];
-                $data = fread($conn, $length);
-                if (false === $data || !isset($data[$length - 1]))
-                {
-                    return;
-                }
-                $result = unserialize($data);
-                if ($result instanceof Result)
-                {
-                    $scheduler->completeTask($result);
-                }
-                elseif ($result instanceof AddCron)
-                {
-                    $cronAnnotation = $result->cronAnnotation;
-                    $this->cronManager->addCronByAnnotation($cronAnnotation, $result->task);
-                }
-                elseif ($result instanceof RemoveCron)
-                {
-                    $this->cronManager->removeCron($result->id);
-                }
-                elseif ($result instanceof Clear)
-                {
-                    $this->cronManager->clear();
-                }
-            }
-            catch (\Throwable $th)
-            {
-                $errorLog->onException($th);
-            }
+            $msg = new CommonMsg($msg);
         }
+        $msg = serialize([
+            'action' => 'cron',
+            'data'   => $msg,
+        ]);
+
+        return $conn->send(pack('N', \strlen($msg)) . $msg);
     }
 
     /**
@@ -155,26 +114,30 @@ class CronProcess extends BaseProcess
      */
     protected function startSchedule(): void
     {
-        imigo(function () {
-            $scheduler = $this->scheduler;
-            $running = &$this->running;
-            do
+        $this->running = true;
+        $scheduler = $this->scheduler;
+        $running = &$this->running;
+        do
+        {
+            $time = microtime(true);
+
+            foreach ($scheduler->schedule() as $task)
             {
-                $time = microtime(true);
-
-                foreach ($scheduler->schedule() as $task)
-                {
-                    $scheduler->runTask($task);
-                }
-
-                $sleep = 1 - (microtime(true) - $time);
-                if ($sleep > 0)
-                {
-                    usleep((int) ($sleep * 1000000));
-                }
+                $scheduler->runTask($task);
             }
-            while ($running);
-        });
+
+            $sleep = 1 - (microtime(true) - $time);
+            if ($sleep > 0)
+            {
+                usleep((int) ($sleep * 1000000));
+            }
+            else
+            {
+                usleep(1);
+            }
+        }
+        // @phpstan-ignore-next-line
+        while ($running);
     }
 
     /**

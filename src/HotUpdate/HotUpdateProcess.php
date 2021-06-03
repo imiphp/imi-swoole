@@ -4,11 +4,9 @@ declare(strict_types=1);
 
 namespace Imi\Swoole\HotUpdate;
 
-use Imi\Aop\Annotation\Inject;
 use Imi\App;
 use Imi\Bean\Annotation\Bean;
 use Imi\Event\Event;
-use Imi\Log\ErrorLog;
 use Imi\Log\Log;
 use Imi\Pool\Annotation\PoolClean;
 use Imi\Swoole\Process\Annotation\Process;
@@ -19,10 +17,21 @@ use Imi\Util\Imi;
 
 /**
  * @Bean(name="hotUpdate", env="swoole")
+ *
  * @Process(name="hotUpdate", unique=true)
  */
 class HotUpdateProcess extends BaseProcess
 {
+    public const DESCRIPTORSPEC = [
+        ['pipe', 'r'],  // 标准输入，子进程从此管道中读取数据
+        ['pipe', 'w'],  // 标准输出，子进程向此管道中写入数据
+    ];
+
+    public const CLEAR_CACHE_FUNCTIONS = [
+        'apcu_clear_cache',
+        'opcache_reset',
+    ];
+
     /**
      * 监视器类.
      */
@@ -63,7 +72,7 @@ class HotUpdateProcess extends BaseProcess
     /**
      * 热更新检测，更改的文件列表，储存在的文件名.
      */
-    protected string $changedFilesFile;
+    protected string $changedFilesFile = '';
 
     /**
      * buildRuntime resource.
@@ -78,14 +87,9 @@ class HotUpdateProcess extends BaseProcess
     private ?array $buildRuntimePipes = null;
 
     /**
-     * @Inject("ErrorLog")
-     */
-    protected ErrorLog $errorLog;
-
-    /**
      * 开始时间.
      */
-    private float $beginTime;
+    private float $beginTime = 0;
 
     /**
      * 是否正在构建中.
@@ -97,6 +101,8 @@ class HotUpdateProcess extends BaseProcess
      */
     private int $buildRuntimeTimerId = 0;
 
+    private bool $running = false;
+
     /**
      * @PoolClean
      */
@@ -106,6 +112,7 @@ class HotUpdateProcess extends BaseProcess
         {
             return;
         }
+        $this->running = true;
         $this->changedFilesFile = Imi::getRuntimePath('changedFilesFile');
         file_put_contents($this->changedFilesFile, '');
         if (null === $this->defaultPath)
@@ -113,13 +120,17 @@ class HotUpdateProcess extends BaseProcess
             $this->defaultPath = Imi::getNamespacePaths(App::getNamespace());
         }
         $this->excludePaths[] = Imi::getRuntimePath();
+        $this->excludePaths[] = '*.macro.php';
         Log::info('Process [hotUpdate] start');
-        $monitor = App::getBean($this->monitorClass, array_merge($this->defaultPath, $this->includePaths), $this->excludePaths);
+        $monitor = App::newInstance($this->monitorClass, array_merge($this->defaultPath, $this->includePaths), $this->excludePaths);
         $time = 0;
         $this->initBuildRuntime();
         $this->startBuildRuntimeTimer();
+        Event::on(['IMI.MAIN_SERVER.WORKER.EXIT', 'IMI.PROCESS.END'], function () {
+            $this->running = false;
+        }, \Imi\Util\ImiPriority::IMI_MIN);
         /** @phpstan-ignore-next-line */
-        while (true)
+        while ($this->running)
         {
             // 检测间隔延时
             if ($this->timespan > 0)
@@ -156,6 +167,8 @@ class HotUpdateProcess extends BaseProcess
                 $this->beginBuildRuntime($changedFiles);
             }
         }
+        $this->stopBuildRuntimeTimer();
+        $this->closeBuildRuntime();
     }
 
     /**
@@ -179,11 +192,7 @@ class HotUpdateProcess extends BaseProcess
      */
     private function clearCache(array $changedFiles): void
     {
-        static $functions = [
-            'apcu_clear_cache',
-            'opcache_reset',
-        ];
-        foreach ($functions as $function)
+        foreach (self::CLEAR_CACHE_FUNCTIONS as $function)
         {
             if (\function_exists($function))
             {
@@ -210,11 +219,7 @@ class HotUpdateProcess extends BaseProcess
             'confirm'           => true,
             'app-runtime'       => Imi::getCurrentModeRuntimePath('runtime'),
         ]);
-        static $descriptorspec = [
-            ['pipe', 'r'],  // 标准输入，子进程从此管道中读取数据
-            ['pipe', 'w'],  // 标准输出，子进程向此管道中写入数据
-        ];
-        $this->buildRuntimeHandler = proc_open(\Imi\cmd($cmd), $descriptorspec, $this->buildRuntimePipes);
+        $this->buildRuntimeHandler = proc_open(\Imi\cmd($cmd), self::DESCRIPTORSPEC, $this->buildRuntimePipes);
         if (false === $this->buildRuntimeHandler)
         {
             throw new \RuntimeException(sprintf('Open "%s" failed', $cmd));

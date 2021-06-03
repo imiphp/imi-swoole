@@ -12,7 +12,9 @@ use Imi\Swoole\Task\TaskParam;
  * 任务注解.
  *
  * @Annotation
+ *
  * @Target("CLASS")
+ *
  * @Parser("Imi\Swoole\Task\Parser\TaskParser")
  *
  * @property string $name       任务名称

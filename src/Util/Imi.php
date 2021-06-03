@@ -13,9 +13,16 @@ use Swoole\Process;
 
 class Imi
 {
-    private function __construct()
-    {
-    }
+    use \Imi\Util\Traits\TStaticClass;
+
+    public const DEFAULT_PROCESS_NAMES = [
+        'master'        => 'imi:master:{namespace}',
+        'manager'       => 'imi:manager:{namespace}',
+        'worker'        => 'imi:worker-{workerId}:{namespace}',
+        'taskWorker'    => 'imi:taskWorker-{workerId}:{namespace}',
+        'process'       => 'imi:process-{processName}:{namespace}',
+        'processPool'   => 'imi:process-pool-{processPoolName}-{workerId}:{namespace}',
+    ];
 
     /**
      * 设置当前进程名.
@@ -35,19 +42,11 @@ class Imi
      */
     public static function getProcessName(string $type, array $data = []): string
     {
-        static $defaults = [
-            'master'        => 'imi:master:{namespace}',
-            'manager'       => 'imi:manager:{namespace}',
-            'worker'        => 'imi:worker-{workerId}:{namespace}',
-            'taskWorker'    => 'imi:taskWorker-{workerId}:{namespace}',
-            'process'       => 'imi:process-{processName}:{namespace}',
-            'processPool'   => 'imi:process-pool-{processPoolName}-{workerId}:{namespace}',
-        ];
-        if (!isset($defaults[$type]))
+        if (!isset(self::DEFAULT_PROCESS_NAMES[$type]))
         {
             return '';
         }
-        $rule = Config::get('@app.process.' . $type, $defaults[$type]);
+        $rule = Config::get('@app.process.' . $type, self::DEFAULT_PROCESS_NAMES[$type]);
         $data['namespace'] = App::getNamespace();
         switch ($type)
         {
@@ -77,7 +76,7 @@ class Imi
         $result = $rule;
         foreach ($data as $k => $v)
         {
-            if (!is_scalar($v))
+            if (!\is_scalar($v))
             {
                 continue;
             }
@@ -149,7 +148,7 @@ class Imi
                 continue;
             }
             $info = ProcessManager::readProcessInfo($id);
-            if (empty($info))
+            if (!$info)
             {
                 continue;
             }

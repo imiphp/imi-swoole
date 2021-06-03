@@ -4,12 +4,10 @@ declare(strict_types=1);
 
 namespace Imi\Swoole\Server\UdpServer;
 
-use Imi\App;
 use Imi\Bean\Annotation\Bean;
+use Imi\Log\Log;
 use Imi\Server\Protocol;
-use Imi\Server\ServerManager;
 use Imi\Swoole\Server\Base;
-use Imi\Swoole\Server\Contract\ISwooleServer;
 use Imi\Swoole\Server\Contract\ISwooleUdpServer;
 use Imi\Swoole\Server\Event\Param\PacketEventParam;
 use Imi\Swoole\Util\Co\ChannelContainer;
@@ -41,7 +39,7 @@ class Server extends Base implements ISwooleUdpServer
     protected function createServer(): void
     {
         $config = $this->getServerInitConfig();
-        $this->swooleServer = new \Swoole\Server($config['host'], $config['port'], $config['mode'], $config['sockType']);
+        $this->swooleServer = new \Swoole\Server($config['host'], (int) $config['port'], (int) $config['mode'], (int) $config['sockType']);
     }
 
     /**
@@ -49,11 +47,7 @@ class Server extends Base implements ISwooleUdpServer
      */
     protected function createSubServer(): void
     {
-        $config = $this->getServerInitConfig();
-        /** @var ISwooleServer $server */
-        $server = ServerManager::getServer('main', ISwooleServer::class);
-        $this->swooleServer = $server->getSwooleServer();
-        $this->swoolePort = $this->swooleServer->addListener($config['host'], $config['port'], $config['sockType']);
+        parent::createSubServer();
         $configs = &$this->config['configs'];
         foreach (static::SWOOLE_PROTOCOLS as $protocol)
         {
@@ -66,11 +60,14 @@ class Server extends Base implements ISwooleUdpServer
      */
     protected function getServerInitConfig(): array
     {
+        $host = $this->config['host'] ?? '0.0.0.0';
+        $sockType = \Imi\Swoole\Util\Swoole::getUdpSockTypeByHost($host);
+
         return [
             'host'      => $this->config['host'] ?? '0.0.0.0',
-            'port'      => $this->config['port'] ?? 8080,
-            'sockType'  => isset($this->config['sockType']) ? (\SWOOLE_SOCK_UDP | $this->config['sockType']) : \SWOOLE_SOCK_UDP,
-            'mode'      => $this->config['mode'] ?? \SWOOLE_BASE,
+            'port'      => (int) ($this->config['port'] ?? 8080),
+            'sockType'  => isset($this->config['sockType']) ? ($sockType | $this->config['sockType']) : $sockType,
+            'mode'      => (int) ($this->config['mode'] ?? \SWOOLE_BASE),
         ];
     }
 
@@ -94,10 +91,13 @@ class Server extends Base implements ISwooleUdpServer
                         'clientInfo'    => $clientInfo,
                     ], $this, PacketEventParam::class);
                 }
-                catch (\Throwable $ex)
+                catch (\Throwable $th)
                 {
                     // @phpstan-ignore-next-line
-                    App::getBean('ErrorLog')->onException($ex);
+                    if (true !== $this->getBean('UdpErrorHandler')->handle($th))
+                    {
+                        Log::error($th);
+                    }
                 }
             });
         }

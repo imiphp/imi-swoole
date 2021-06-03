@@ -15,11 +15,12 @@ use Imi\Config;
 use Imi\Core\App\Enum\LoadRuntimeResult;
 use Imi\Event\Event;
 use Imi\Lock\Lock;
+use Imi\Log\Log;
 use Imi\Main\Helper;
 use Imi\Pool\PoolManager;
 use Imi\Swoole\Context\CoroutineContextManager;
+use Imi\Swoole\Log\SwooleLogger;
 use Imi\Swoole\Util\AtomicManager;
-use function Imi\ttyExec;
 use Imi\Util\Imi;
 use Imi\Util\Process\ProcessAppContexts;
 use Imi\Util\Process\ProcessType;
@@ -27,6 +28,8 @@ use Imi\Worker;
 use Symfony\Component\Console\ConsoleEvents;
 use Symfony\Component\Console\Event\ConsoleCommandEvent;
 use Symfony\Component\Console\Output\OutputInterface;
+
+use function Imi\ttyExec;
 
 class SwooleApp extends CliApp
 {
@@ -79,9 +82,7 @@ class SwooleApp extends CliApp
         }
         catch (\Exception $th)
         {
-            /** @var \Imi\Log\ErrorLog $errorLog */
-            $errorLog = App::getBean('ErrorLog');
-            $errorLog->onException($th);
+            Log::error($th);
             exit(255);
         }
     }
@@ -115,6 +116,11 @@ class SwooleApp extends CliApp
                     break;
                 }
             }
+        }
+
+        if (null === Config::get('@app.logger.logger'))
+        {
+            Config::set('@app.logger.logger', SwooleLogger::class);
         }
     }
 

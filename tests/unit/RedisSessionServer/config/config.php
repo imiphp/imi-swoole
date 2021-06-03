@@ -6,25 +6,26 @@ use function Imi\env;
 
 return [
     // 项目根命名空间
-    'namespace'    => 'Imi\Swoole\Test\RedisSessionServer',
+    'namespace'         => 'Imi\Swoole\Test\RedisSessionServer',
 
     // 配置文件
-    'configs'    => [
+    'configs'           => [
         'beans'        => __DIR__ . '/beans.php',
     ],
 
     // 扫描目录
-    'beanScan'    => [
+    'beanScan'          => [
         'Imi\Swoole\Test\RedisSessionServer\Listener',
     ],
 
     // 组件命名空间
-    'components'    => [
+    'components'        => [
         'Swoole' => 'Imi\Swoole',
+        'Macro'  => 'Imi\Macro',
     ],
 
     // 日志配置
-    'logger' => [
+    'logger'            => [
         'channels' => [
             'imi' => [
                 'handlers' => [
@@ -60,13 +61,14 @@ return [
     ],
 
     // 主服务器配置
-    'mainServer'    => [
+    'mainServer'        => [
         'namespace'    => 'Imi\Swoole\Test\RedisSessionServer\ApiServer',
         'type'         => Imi\Swoole\Server\Type::HTTP,
         'host'         => env('SERVER_HOST', '127.0.0.1'),
         'port'         => 13001,
         'configs'      => [
             'worker_num'    => 1,
+            'max_wait_time' => 30,
         ],
     ],
 
@@ -75,10 +77,10 @@ return [
     ],
 
     // 连接池配置
-    'pools'    => [
+    'pools'             => [
         // 主数据库
-        'maindb'    => [
-            'pool'    => [
+        'maindb'          => [
+            'pool'        => [
                 'class'        => \Imi\Swoole\Db\Pool\CoroutineDbPool::class,
                 'config'       => [
                     'maxResources'    => 10,
@@ -94,8 +96,8 @@ return [
                 'charset'     => 'utf8mb4',
             ],
         ],
-        'redis'    => [
-            'pool'    => [
+        'redis'           => [
+            'pool'        => [
                 'class'        => \Imi\Swoole\Redis\Pool\CoroutineRedisPool::class,
                 'config'       => [
                     'maxResources'    => 10,
@@ -109,7 +111,7 @@ return [
             ],
         ],
         'redisSession'    => [
-            'pool'    => [
+            'pool'        => [
                 'class'        => \Imi\Swoole\Redis\Pool\CoroutineRedisPool::class,
                 'config'       => [
                     'maxResources'    => 10,
@@ -126,13 +128,13 @@ return [
     ],
 
     // 数据库配置
-    'db'    => [
+    'db'                => [
         // 默认连接池名
         'defaultPool'    => 'maindb',
     ],
 
     // redis 配置
-    'redis' => [
+    'redis'             => [
         // 默认连接池名
         'defaultPool'   => 'redis',
     ],

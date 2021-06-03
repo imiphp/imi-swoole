@@ -10,6 +10,7 @@ use Imi\Server\Http\Route\Annotation\Action;
 use Imi\Server\Http\Route\Annotation\Controller;
 use Imi\Server\ServerManager;
 use Imi\Swoole\Server\Server;
+use Imi\Swoole\Task\TaskManager;
 use Imi\Worker;
 
 /**
@@ -109,6 +110,16 @@ class ServerUtilController extends HttpController
 
     /**
      * @Action
+     */
+    public function sendToGroupTask(string $group): array
+    {
+        return TaskManager::nPostWait('SendToGroupTask', [
+            'group' => $group,
+        ], 3);
+    }
+
+    /**
+     * @Action
      *
      * @param int|string $clientId
      */
@@ -130,6 +141,16 @@ class ServerUtilController extends HttpController
         return [
             'clientId'   => Server::close($clientId),
             'flag'       => Server::closeByFlag($flag),
+        ];
+    }
+
+    /**
+     * @Action
+     */
+    public function getConnectionCount(): array
+    {
+        return [
+            'count' => Server::getConnectionCount(),
         ];
     }
 }

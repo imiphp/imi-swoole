@@ -1,16 +1,15 @@
 {
     "name": "imiphp/imi-swoole",
     "type": "library",
-    "license": "MulanPSL-1.0",
+    "license": "MulanPSL-2.0",
     "description": "imi swoole component",
     "require": {
-        "php": ">=7.4 <8.2",
-        "ext-swoole": ">=4.7 <5.1",
-        "yurunsoft/swoole-co-pool": "^1.1.0"
+        "ext-swoole": ">=4.8",
+        "yurunsoft/swoole-co-pool": "~1.0|~2.0"
     },
     "require-dev": {
         "phpunit/phpunit": "~9.6",
-        "swoole/ide-helper": "^4.7"
+        "swoole/ide-helper": "~4.8"
     },
     "autoload": {
         "psr-4": {
@@ -39,5 +38,7 @@
     "bin": [
         "bin/imi-swoole",
         "bin/swoole-phpunit"
-    ]
+    ],
+    "minimum-stability": "dev",
+    "prefer-stable": true
 }

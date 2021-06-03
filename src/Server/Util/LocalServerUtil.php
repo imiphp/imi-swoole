@@ -15,13 +15,13 @@ use Imi\Swoole\Server\Contract\ISwooleServer;
 use Imi\Swoole\Server\Contract\ISwooleServerUtil;
 use Imi\Swoole\Server\Event\Param\PipeMessageEventParam;
 use Imi\Swoole\Util\Co\ChannelContainer;
+use Imi\Swoole\Util\Coroutine;
 use Imi\Util\Process\ProcessAppContexts;
 use Imi\Util\Process\ProcessType;
 use Imi\Worker;
-use Swoole\Coroutine;
 
 /**
- * @Bean(name="LocalServerUtil", env="swoole")
+ * @Bean(name="LocalServerUtil", env="swoole", recursion=false)
  */
 class LocalServerUtil implements ISwooleServerUtil
 {
@@ -149,14 +149,16 @@ class LocalServerUtil implements ISwooleServerUtil
         if ($server instanceof \Imi\Swoole\Server\WebSocket\Server)
         {
             $method = 'push';
+            $pushParams = (array) $server->getNonControlFrameType();
         }
         else
         {
             $method = 'send';
+            $pushParams = [];
         }
         if (\SWOOLE_BASE === $swooleServer->mode && $toAllWorkers && 'push' === $method)
         {
-            $id = uniqid('', true);
+            $id = static::class . ':' . bin2hex(random_bytes(8));
             try
             {
                 if ($this->needResponse)
@@ -201,7 +203,7 @@ class LocalServerUtil implements ISwooleServerUtil
                 {
                     continue;
                 }
-                if ($swooleServer->$method($tmpClientId, $data))
+                if ($swooleServer->{$method}($tmpClientId, $data, ...$pushParams))
                 {
                     ++$success;
                 }
@@ -268,14 +270,16 @@ class LocalServerUtil implements ISwooleServerUtil
         if ($server instanceof \Imi\Swoole\Server\WebSocket\Server)
         {
             $method = 'push';
+            $pushParams = (array) $server->getNonControlFrameType();
         }
         else
         {
             $method = 'send';
+            $pushParams = [];
         }
         if (\SWOOLE_BASE === $swooleServer->mode && $toAllWorkers && 'push' === $method)
         {
-            $id = uniqid('', true);
+            $id = static::class . ':' . bin2hex(random_bytes(8));
             try
             {
                 if ($this->needResponse)
@@ -318,7 +322,7 @@ class LocalServerUtil implements ISwooleServerUtil
                 {
                     continue;
                 }
-                if ($swooleServer->$method($clientId, $data))
+                if ($swooleServer->{$method}($clientId, $data, ...$pushParams))
                 {
                     ++$success;
                 }
@@ -352,14 +356,16 @@ class LocalServerUtil implements ISwooleServerUtil
         if ($server instanceof \Imi\Swoole\Server\WebSocket\Server)
         {
             $method = 'push';
+            $pushParams = (array) $server->getNonControlFrameType();
         }
         else
         {
             $method = 'send';
+            $pushParams = [];
         }
         if (\SWOOLE_BASE === $swooleServer->mode && $toAllWorkers && 'push' === $method)
         {
-            $id = uniqid('', true);
+            $id = static::class . ':' . bin2hex(random_bytes(8));
             try
             {
                 if ($this->needResponse)
@@ -401,7 +407,7 @@ class LocalServerUtil implements ISwooleServerUtil
                 $group = $server->getGroup($tmpGroupName);
                 if ($group)
                 {
-                    $result = $group->$method($data);
+                    $result = $group->{$method}($data, ...$pushParams);
                     foreach ($result as $item)
                     {
                         if ($item)
@@ -458,17 +464,20 @@ class LocalServerUtil implements ISwooleServerUtil
         $result = 0;
         if (\SWOOLE_BASE === $swooleServer->mode && $toAllWorkers && null !== $flag)
         {
-            $id = uniqid('', true);
+            $id = static::class . ':' . bin2hex(random_bytes(8));
             try
             {
-                $channel = ChannelContainer::getChannel($id);
+                if ($this->needResponse)
+                {
+                    $channel = ChannelContainer::getChannel($id);
+                }
                 $count = $this->sendMessage('closeByFlagRequest', [
                     'messageId'    => $id,
                     'flag'         => $flag,
                     'serverName'   => $server->getName(),
                     'needResponse' => true,
                 ]);
-                if (ProcessType::PROCESS !== App::get(ProcessAppContexts::PROCESS_TYPE))
+                if (isset($channel) && ProcessType::PROCESS !== App::get(ProcessAppContexts::PROCESS_TYPE))
                 {
                     for ($i = $count; $i > 0; --$i)
                     {
@@ -525,17 +534,20 @@ class LocalServerUtil implements ISwooleServerUtil
         $swooleServer = $server->getSwooleServer();
         if (\SWOOLE_BASE === $swooleServer->mode && $toAllWorkers)
         {
-            $id = uniqid('', true);
+            $id = static::class . ':' . bin2hex(random_bytes(8));
             try
             {
-                $channel = ChannelContainer::getChannel($id);
+                if ($this->needResponse)
+                {
+                    $channel = ChannelContainer::getChannel($id);
+                }
                 $count = $this->sendMessage('existsRequest', [
                     'messageId'    => $id,
                     'clientId'     => $clientId,
                     'serverName'   => $server->getName(),
                     'needResponse' => true,
                 ]);
-                if (ProcessType::PROCESS !== App::get(ProcessAppContexts::PROCESS_TYPE))
+                if (isset($channel) && ProcessType::PROCESS !== App::get(ProcessAppContexts::PROCESS_TYPE))
                 {
                     for ($i = $count; $i > 0; --$i)
                     {
@@ -573,17 +585,20 @@ class LocalServerUtil implements ISwooleServerUtil
         $swooleServer = $server->getSwooleServer();
         if (\SWOOLE_BASE === $swooleServer->mode && $toAllWorkers && null !== $flag)
         {
-            $id = uniqid('', true);
+            $id = static::class . ':' . bin2hex(random_bytes(8));
             try
             {
-                $channel = ChannelContainer::getChannel($id);
+                if ($this->needResponse)
+                {
+                    $channel = ChannelContainer::getChannel($id);
+                }
                 $count = $this->sendMessage('existsRequest', [
                     'messageId'    => $id,
                     'flag'         => $flag,
                     'serverName'   => $server->getName(),
                     'needResponse' => true,
                 ]);
-                if (ProcessType::PROCESS !== App::get(ProcessAppContexts::PROCESS_TYPE))
+                if (isset($channel) && ProcessType::PROCESS !== App::get(ProcessAppContexts::PROCESS_TYPE))
                 {
                     for ($i = $count; $i > 0; --$i)
                     {
@@ -643,7 +658,7 @@ class LocalServerUtil implements ISwooleServerUtil
      */
     public function getConnectionCount(?string $serverName = null): int
     {
-        return iterator_count($this->getServer($serverName)->getSwoolePort()->connections);
+        return $this->getServer($serverName)->getSwoolePort()->connections->count();
     }
 
     /**

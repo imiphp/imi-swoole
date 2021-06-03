@@ -4,29 +4,34 @@ declare(strict_types=1);
 
 namespace Imi\Swoole\Process;
 
-use function hash;
 use Imi\App;
 use Imi\Event\Event;
+use Imi\Log\Log;
 use Imi\Server\ServerManager;
 use Imi\Swoole\Process\Contract\IProcess;
 use Imi\Swoole\Process\Exception\ProcessAlreadyRunException;
 use Imi\Swoole\Server\Contract\ISwooleServer;
 use Imi\Swoole\Util\Coroutine;
 use Imi\Swoole\Util\Imi as SwooleImi;
-use function Imi\ttyExec;
+use Imi\Timer\Timer;
 use Imi\Util\File;
 use Imi\Util\Imi;
+use Imi\Util\ImiPriority;
 use Imi\Util\Process\ProcessAppContexts;
 use Imi\Util\Process\ProcessType;
+use Swoole\Event as SwooleEvent;
 use Swoole\ExitException;
-use Swoole\Process;
 use Swoole\Table;
+
+use function Imi\ttyExec;
 
 /**
  * 进程管理类.
  */
 class ProcessManager
 {
+    use \Imi\Util\Traits\TStaticClass;
+
     private static array $map = [];
 
     /**
@@ -49,10 +54,6 @@ class ProcessManager
     private static array $managerProcessSet = [];
 
     private static Table $processInfoTable;
-
-    private function __construct()
-    {
-    }
 
     public static function getMap(): array
     {
@@ -88,7 +89,7 @@ class ProcessManager
      * 本方法无法在控制器中使用
      * 返回 Process 对象实例.
      */
-    public static function create(string $name, array $args = [], ?bool $redirectStdinStdout = null, ?int $pipeType = null, ?string $alias = null): Process
+    public static function create(string $name, array $args = [], ?bool $redirectStdinStdout = null, ?int $pipeType = null, ?string $alias = null, bool $runWithManager = false): Process
     {
         $processOption = self::get($name);
         if (null === $processOption)
@@ -108,15 +109,15 @@ class ProcessManager
             $pipeType = $processOption['options']['pipeType'];
         }
 
-        return new Process(static::getProcessCallable($args, $name, $processOption, $alias), $redirectStdinStdout, $pipeType);
+        return new Process(static::getProcessCallable($args, $name, $processOption, $alias, $runWithManager), $redirectStdinStdout, $pipeType);
     }
 
     /**
      * 获取进程回调.
      */
-    public static function getProcessCallable(array $args, string $name, array $processOption, ?string $alias = null): callable
+    public static function getProcessCallable(array $args, string $name, array $processOption, ?string $alias = null, bool $runWithManager = false): callable
     {
-        return function (Process $swooleProcess) use ($args, $name, $processOption, $alias) {
+        return static function (Process $swooleProcess) use ($args, $name, $processOption, $alias, $runWithManager) {
             App::set(ProcessAppContexts::PROCESS_TYPE, ProcessType::PROCESS, true);
             App::set(ProcessAppContexts::PROCESS_NAME, $name, true);
             // 设置进程名称
@@ -132,10 +133,39 @@ class ProcessManager
             mt_srand();
             Imi::loadRuntimeInfo(Imi::getCurrentModeRuntimePath('runtime'));
             $exitCode = 0;
-            $callable = function () use ($swooleProcess, $args, $name, $alias, $processOption, &$exitCode) {
+            $callable = static function () use ($swooleProcess, $args, $name, $alias, $processOption, &$exitCode, $runWithManager) {
+                if ($runWithManager)
+                {
+                    Log::info('Process start [' . $name . ']. pid: ' . getmypid() . ', UnixSocket: ' . $swooleProcess->getUnixSocketFile());
+                }
+                // 超时强制退出
+                Event::on('IMI.PROCESS.END', static fn () => Timer::after(3000, static fn () => SwooleEvent::exit()), ImiPriority::IMI_MAX);
+                // 正常退出
+                Event::on('IMI.PROCESS.END', static fn () => Signal::clear(), ImiPriority::IMI_MIN);
+                $processEnded = false;
+                imigo(static function () use ($name, $swooleProcess, &$processEnded) {
+                    if (Signal::wait(\SIGTERM))
+                    {
+                        if ($processEnded)
+                        {
+                            return;
+                        }
+                        $processEnded = true;
+                        // 进程结束事件
+                        Event::trigger('IMI.PROCESS.END', [
+                            'name'      => $name,
+                            'process'   => $swooleProcess,
+                        ]);
+                    }
+                });
                 if ($inCoroutine = Coroutine::isIn())
                 {
-                    Coroutine::defer(static function () use ($name, $swooleProcess) {
+                    Coroutine::defer(static function () use ($name, $swooleProcess, &$processEnded) {
+                        if ($processEnded)
+                        {
+                            return;
+                        }
+                        $processEnded = true;
                         // 进程结束事件
                         Event::trigger('IMI.PROCESS.END', [
                             'name'      => $name,
@@ -149,6 +179,10 @@ class ProcessManager
                     {
                         throw new \RuntimeException(sprintf('Lock process %s failed', $name));
                     }
+                    if ($processOption['options']['co'])
+                    {
+                        $swooleProcess->startUnixSocketServer();
+                    }
                     // 写出进程信息
                     if (null !== $swooleProcess->id && null !== $swooleProcess->pid)
                     {
@@ -161,7 +195,7 @@ class ProcessManager
                     ]);
                     // 执行任务
                     /** @var IProcess $processInstance */
-                    $processInstance = App::getBean($processOption['className'], $args);
+                    $processInstance = App::newInstance($processOption['className'], $args);
                     $processInstance->run($swooleProcess);
                     if ($processOption['options']['unique'])
                     {
@@ -174,19 +208,23 @@ class ProcessManager
                 }
                 catch (\Throwable $th)
                 {
-                    // @phpstan-ignore-next-line
-                    App::getBean('ErrorLog')->onException($th);
+                    Log::error($th);
                     $exitCode = 255;
                 }
                 finally
                 {
-                    if (!$inCoroutine)
+                    if (!$inCoroutine && !$processEnded)
                     {
+                        $processEnded = true;
                         // 进程结束事件
                         Event::trigger('IMI.PROCESS.END', [
                             'name'      => $name,
                             'process'   => $swooleProcess,
                         ]);
+                    }
+                    if ($runWithManager)
+                    {
+                        Log::info('Process stop [' . $name . ']. pid: ' . getmypid());
                     }
                 }
             };
@@ -292,7 +330,7 @@ class ProcessManager
      */
     public static function coRun(string $name, array $args = [], ?bool $redirectStdinStdout = null, ?int $pipeType = null): void
     {
-        Coroutine::create(function () use ($name, $args, $redirectStdinStdout, $pipeType) {
+        Coroutine::create(static function () use ($name, $args, $redirectStdinStdout, $pipeType) {
             static::run($name, $args, $redirectStdinStdout, $pipeType);
         });
     }
@@ -302,7 +340,8 @@ class ProcessManager
      */
     public static function runWithManager(string $name, array $args = [], ?bool $redirectStdinStdout = null, ?int $pipeType = null, ?string $alias = null): ?Process
     {
-        $process = static::create($name, $args, $redirectStdinStdout, $pipeType, $alias);
+        $alias ??= $name;
+        $process = static::create($name, $args, $redirectStdinStdout, $pipeType, $alias, true);
         $swooleServer = ServerManager::getServer('main', ISwooleServer::class)->getSwooleServer();
         $swooleServer->addProcess($process);
         self::$managerProcesses[$name][$alias] = $process;
@@ -335,7 +374,7 @@ class ProcessManager
 
     public static function writeProcessInfo(string $id, int $wid, int $pid): void
     {
-        if (empty(self::$processInfoTable))
+        if (!isset(self::$processInfoTable))
         {
             return;
         }
@@ -350,7 +389,7 @@ class ProcessManager
      */
     public static function readProcessInfo(string $id): ?array
     {
-        if (empty(self::$processInfoTable))
+        if (!isset(self::$processInfoTable))
         {
             return null;
         }
@@ -363,6 +402,8 @@ class ProcessManager
      */
     public static function getProcessWithManager(string $name, ?string $alias = null): ?Process
     {
+        $alias ??= $name;
+
         return self::$managerProcesses[$name][$alias] ?? null;
     }
 

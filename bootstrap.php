@@ -5,10 +5,8 @@ declare(strict_types=1);
 namespace Imi\Swoole;
 
 use Imi\App;
-use Imi\AppContexts;
-use Imi\Cli\ImiCommand;
 use Imi\Event\Event;
-use Imi\Util\File;
+use Imi\Log\Log;
 
 return static function () {
     $status = 0;
@@ -17,7 +15,11 @@ return static function () {
         {
             $path = null;
 
-            if (!class_exists('Imi\App'))
+            if (\defined('IMI_IN_PHAR') && IMI_IN_PHAR)
+            {
+                $path = \dirname(__DIR__, 3);
+            }
+            elseif (!class_exists(\Imi\App::class))
             {
                 (static function () use (&$path) {
                     foreach ([
@@ -51,24 +53,7 @@ return static function () {
             Event::on('IMI.BUILD_RUNTIME', \Imi\Swoole\Task\Listener\BuildRuntimeListener::class, 19940000);
 
             // 运行
-            App::run((static function () use ($path): string {
-                $input = ImiCommand::getInput();
-                $namespace = $input->getParameterOption('--app-namespace', false);
-                if (false === $namespace)
-                {
-                    $appPath = App::get(AppContexts::APP_PATH) ?? ($path ?? realpath(\dirname($_SERVER['SCRIPT_NAME'], 2)));
-                    $config = include File::path($appPath, 'config/config.php');
-                    if (!isset($config['namespace']))
-                    {
-                        echo 'Has no namespace, please add arg: --app-namespace "Your App Namespace"', \PHP_EOL;
-                        exit(255);
-                    }
-                    App::setNx(AppContexts::APP_PATH, $appPath, true);
-                    $namespace = $config['namespace'];
-                }
-
-                return $namespace;
-            })(), \Imi\Swoole\SwooleApp::class);
+            App::runApp($path ?? realpath(\dirname($_SERVER['SCRIPT_NAME'], 2)), \Imi\Swoole\SwooleApp::class);
         }
         catch (\Swoole\ExitException $e)
         {
@@ -79,15 +64,14 @@ return static function () {
             $status = 255;
             try
             {
-                /** @var \Imi\Log\ErrorLog $errorLog */
-                $errorLog = App::getBean('ErrorLog');
-                $errorLog->onException($th);
+                Log::error($th);
             }
             catch (\Throwable $tth)
             {
                 throw $th;
             }
         }
+        Event::trigger('IMI.SWOOLE.MAIN_COROUTINE.END');
     });
     if (0 === $status)
     {

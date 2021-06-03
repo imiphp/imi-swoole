@@ -19,7 +19,7 @@ use Imi\Util\Imi;
 use Imi\Worker;
 
 /**
- * @Listener(eventName="IMI.MAIN_SERVER.WORKER.START", priority=Imi\Util\ImiPriority::IMI_MIN)
+ * @Listener(eventName="IMI.MAIN_SERVER.WORKER.START", priority=Imi\Util\ImiPriority::IMI_MIN, one=true)
  */
 class AfterWorkerStart implements IWorkerStartEventListener
 {
@@ -29,17 +29,13 @@ class AfterWorkerStart implements IWorkerStartEventListener
     public function handle(WorkerStartEventParam $e): void
     {
         // 项目初始化事件
-        if (!$e->server->getSwooleServer()->taskworker)
+        if (0 === Worker::getWorkerId() && !$this->checkInitFlagFile($initFlagFile = Imi::getRuntimePath(str_replace('\\', '-', App::getNamespace()) . '.app.init')))
         {
-            if (0 === Worker::getWorkerId() && !$this->checkInitFlagFile($initFlagFile = Imi::getRuntimePath(str_replace('\\', '-', App::getNamespace()) . '.app.init')))
-            {
-                Event::trigger('IMI.APP.INIT', [
-                ], $e->getTarget());
+            Event::trigger('IMI.APP.INIT', [], $e->getTarget());
 
-                file_put_contents($initFlagFile, SwooleWorker::getMasterPid());
+            file_put_contents($initFlagFile, SwooleWorker::getMasterPid());
 
-                ImiCommand::getOutput()->writeln('<info>App Inited</info>');
-            }
+            ImiCommand::getOutput()->writeln('<info>App Inited</info>');
         }
         foreach (ServerManager::getServers() as $name => $server)
         {

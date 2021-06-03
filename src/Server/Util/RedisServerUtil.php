@@ -4,24 +4,22 @@ declare(strict_types=1);
 
 namespace Imi\Swoole\Server\Util;
 
-use Imi\Aop\Annotation\Inject;
 use Imi\App;
 use Imi\Bean\Annotation\Bean;
 use Imi\ConnectionContext;
 use Imi\Event\Event;
-use Imi\Log\ErrorLog;
 use Imi\Redis\RedisManager;
 use Imi\RequestContext;
 use Imi\Server\DataParser\DataParser;
 use Imi\Server\ServerManager;
 use Imi\Swoole\Util\Co\ChannelContainer;
+use Imi\Swoole\Util\Coroutine;
 use Imi\Util\Process\ProcessAppContexts;
 use Imi\Util\Process\ProcessType;
 use Imi\Worker;
-use Swoole\Coroutine;
 
 /**
- * @Bean(name="RedisServerUtil", env="swoole")
+ * @Bean(name="RedisServerUtil", env="swoole", recursion=false)
  */
 class RedisServerUtil extends LocalServerUtil
 {
@@ -36,11 +34,6 @@ class RedisServerUtil extends LocalServerUtil
     protected string $channel = 'imi:RedisServerUtil:channel';
 
     protected bool $subscribeEnable = true;
-
-    /**
-     * @Inject
-     */
-    protected ErrorLog $errorLog;
 
     public function __init(): void
     {
@@ -112,7 +105,7 @@ class RedisServerUtil extends LocalServerUtil
             $success = 0;
             foreach ((array) $flag as $tmpFlag)
             {
-                $id = uniqid('', true);
+                $id = static::class . ':' . bin2hex(random_bytes(8));
                 try
                 {
                     if ($this->needResponse)
@@ -191,7 +184,7 @@ class RedisServerUtil extends LocalServerUtil
                 $serverName = $server->getName();
             }
             $success = 0;
-            $id = uniqid('', true);
+            $id = static::class . ':' . bin2hex(random_bytes(8));
             try
             {
                 if ($this->needResponse)
@@ -253,7 +246,7 @@ class RedisServerUtil extends LocalServerUtil
                 }
                 $serverName = $server->getName();
             }
-            $id = uniqid('', true);
+            $id = static::class . ':' . bin2hex(random_bytes(8));
             try
             {
                 if ($this->needResponse)
@@ -322,7 +315,7 @@ class RedisServerUtil extends LocalServerUtil
                 }
                 catch (\Throwable $e)
                 {
-                    $this->errorLog->onException($e);
+                    \Imi\Log\Log::error($e);
                     sleep(3); // 等待 3 秒重试
                 }
             }

@@ -21,12 +21,13 @@ use Imi\Swoole\Task\Interfaces\ITaskHandler;
 use Imi\Swoole\Task\TaskManager;
 use Imi\Util\Process\ProcessAppContexts;
 use Imi\Util\Process\ProcessType;
+
 use function Yurun\Swoole\Coroutine\goWait;
 
 /**
  * 定时任务管理器.
  *
- * @Bean("CronManager")
+ * @Bean(name="CronManager", recursion=false)
  */
 class CronManager implements ICronManager
 {
@@ -61,21 +62,25 @@ class CronManager implements ICronManager
             if (ProcessType::PROCESS === App::get(ProcessAppContexts::PROCESS_TYPE))
             {
                 $input = ImiCommand::getInput();
-                $this->socketFile = $input->getParameterOption('--cron-sock');
-                if (!$this->socketFile)
+                $this->socketFile = $input->getParameterOption('--cron-sock', null);
+            }
+            if (null === $this->socketFile)
+            {
+                $process = ProcessManager::getProcessWithManager('CronProcess');
+                if ($process)
                 {
-                    throw new \InvalidArgumentException('In process to run cron, you must have arg cron-sock');
+                    $this->socketFile = $process->getUnixSocketFile();
                 }
             }
-            else
+            if (null === $this->socketFile)
             {
-                $this->socketFile = '/tmp/imi.' . App::get(ProcessAppContexts::MASTER_PID) . '.cron.sock';
+                throw new \InvalidArgumentException('In process to run cron, you must have arg cron-sock');
             }
         }
         $realTasks = &$this->realTasks;
         foreach ($this->tasks as $id => $task)
         {
-            $realTasks[$id] = new CronTask((string) $id, $task['type'], $task['task'], $task['cron'], $task['data'] ?? null, $task['lockExpire'] ?? 120, $task['unique'] ?? null, $task['redisPool'] ?? null, $task['lockWaitTimeout'] ?? 10, $task['force'] ?? false);
+            $realTasks[$id] = new CronTask((string) $id, $task['type'], $task['task'], $task['cron'], $task['data'] ?? null, $task['lockExpire'] ?? 120, $task['unique'] ?? null, $task['redisPool'] ?? null, $task['lockWaitTimeout'] ?? 10, $task['force'] ?? false, $task['successLog'] ?? true);
         }
     }
 
@@ -85,20 +90,22 @@ class CronManager implements ICronManager
     public function addCronByAnnotation(Cron $cron, string $pointClass): void
     {
         $this->addCron($cron->id, $cron->type, $pointClass, [[
-            'year'      => $cron->year,
-            'month'     => $cron->month,
-            'day'       => $cron->day,
-            'week'      => $cron->week,
-            'hour'      => $cron->hour,
-            'minute'    => $cron->minute,
-            'second'    => $cron->second,
-        ]], $cron->data, $cron->maxExecutionTime, $cron->unique, $cron->redisPool, $cron->lockWaitTimeout, $cron->force);
+            'year'       => $cron->year,
+            'month'      => $cron->month,
+            'day'        => $cron->day,
+            'week'       => $cron->week,
+            'hour'       => $cron->hour,
+            'minute'     => $cron->minute,
+            'second'     => $cron->second,
+            'delayMin'   => $cron->delayMin,
+            'delayMax'   => $cron->delayMax,
+        ]], $cron->data, $cron->maxExecutionTime, $cron->unique, $cron->redisPool, $cron->lockWaitTimeout, $cron->force, $cron->successLog);
     }
 
     /**
      * {@inheritDoc}
      */
-    public function addCron(string $id, ?string $type, $task, array $cronRules, $data, float $lockExpire = 3, ?string $unique = null, ?string $redisPool = null, float $lockWaitTimeout = 3, bool $force = false): void
+    public function addCron(string $id, ?string $type, $task, array $cronRules, $data, float $lockExpire = 3, ?string $unique = null, ?string $redisPool = null, float $lockWaitTimeout = 3, bool $force = false, bool $successLog = true): void
     {
         if (isset($this->tasks[$id]))
         {
@@ -112,7 +119,7 @@ class CronManager implements ICronManager
         {
             throw new \InvalidArgumentException('$type must not null');
         }
-        $this->realTasks[$id] = new CronTask($id, $type, $task, $cronRules, $data, $lockExpire, $unique, $redisPool, $lockWaitTimeout, $force);
+        $this->realTasks[$id] = new CronTask($id, $type, $task, $cronRules, $data, $lockExpire, $unique, $redisPool, $lockWaitTimeout, $force, $successLog);
     }
 
     /**
@@ -141,6 +148,14 @@ class CronManager implements ICronManager
     /**
      * {@inheritDoc}
      */
+    public function hasTask(string $id): bool
+    {
+        return isset($this->realTasks[$id]);
+    }
+
+    /**
+     * {@inheritDoc}
+     */
     public function getRealTasks(): array
     {
         return $this->realTasks;
@@ -149,7 +164,7 @@ class CronManager implements ICronManager
     /**
      * {@inheritDoc}
      */
-    public function getTask($id): ?CronTask
+    public function getTask(string $id): ?CronTask
     {
         return $this->realTasks[$id] ?? null;
     }
@@ -228,7 +243,7 @@ class CronManager implements ICronManager
         {
             $cronType = CronTaskType::PROCESS;
             /** @var Process|null $process */
-            $process = AnnotationManager::getClassAnnotations($class, Process::class)[0] ?? null;
+            $process = AnnotationManager::getClassAnnotations($class, Process::class, true, true);
             if (!$process)
             {
                 throw new \RuntimeException(sprintf('Cron %s, class %s must have a @Process Annotation', $cronId, $class));
@@ -245,7 +260,7 @@ class CronManager implements ICronManager
         {
             $cronType = CronTaskType::TASK;
             /** @var Task|null $taskAnnotation */
-            $taskAnnotation = AnnotationManager::getClassAnnotations($class, Task::class)[0] ?? null;
+            $taskAnnotation = AnnotationManager::getClassAnnotations($class, Task::class, true, true);
             if (!$taskAnnotation)
             {
                 throw new \RuntimeException(sprintf('Cron %s, class %s must have a @Task Annotation', $cronId, $class));

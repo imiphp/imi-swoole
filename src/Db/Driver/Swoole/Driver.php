@@ -4,8 +4,8 @@ declare(strict_types=1);
 
 namespace Imi\Swoole\Db\Driver\Swoole;
 
-use Imi\App;
 use Imi\Bean\Annotation\Bean;
+use Imi\Bean\BeanFactory;
 use Imi\Config;
 use Imi\Db\Exception\DbException;
 use Imi\Db\Mysql\Contract\IMysqlStatement;
@@ -17,6 +17,8 @@ use Swoole\Coroutine\MySQL;
 
 /**
  * Swoole Coroutine MySQL 驱动.
+ *
+ * @deprecated 3.0
  *
  * @Bean("SwooleMysqlDriver")
  */
@@ -47,7 +49,7 @@ class Driver extends MysqlBase
     /**
      * 事务管理.
      */
-    protected Transaction $transaction;
+    protected ?Transaction $transaction = null;
 
     /**
      * 参数格式：
@@ -68,7 +70,6 @@ class Driver extends MysqlBase
     {
         parent::__construct($option);
         $this->isCacheStatement = Config::get('@app.db.statement.cache', true);
-        $this->transaction = new Transaction();
     }
 
     /**
@@ -110,7 +111,7 @@ class Driver extends MysqlBase
         $option = $this->option;
         $serverConfig = [
             'host'          => $option['host'] ?? '127.0.0.1',
-            'port'          => $option['port'] ?? 3306,
+            'port'          => (int) ($option['port'] ?? 3306),
             'user'          => $option['username'] ?? 'root',
             'password'      => $option['password'] ?? '',
             'database'      => $option['database'] ?? '',
@@ -148,7 +149,10 @@ class Driver extends MysqlBase
             $this->instance->close();
             $this->instance = null;
         }
-        $this->transaction->init();
+        if ($this->transaction)
+        {
+            $this->transaction->init();
+        }
     }
 
     /**
@@ -174,7 +178,7 @@ class Driver extends MysqlBase
             return false;
         }
         $this->exec('SAVEPOINT P' . $this->getTransactionLevels());
-        $this->transaction->beginTransaction();
+        $this->getTransaction()->beginTransaction();
 
         return true;
     }
@@ -194,7 +198,7 @@ class Driver extends MysqlBase
             return false;
         }
 
-        return $this->transaction->commit();
+        return $this->getTransaction()->commit();
     }
 
     /**
@@ -202,18 +206,18 @@ class Driver extends MysqlBase
      */
     public function rollBack(?int $levels = null): bool
     {
-        if (null === $levels)
+        if (null === $levels || ($toLevel = $this->getTransactionLevels() - $levels) <= 0)
         {
             $result = $this->instance->rollback();
         }
         else
         {
-            $this->exec('ROLLBACK TO P' . ($this->getTransactionLevels()));
+            $this->exec('ROLLBACK TO P' . $toLevel);
             $result = true;
         }
         if ($result)
         {
-            $this->transaction->rollBack($levels);
+            $this->getTransaction()->rollBack($levels);
         }
         elseif ($this->checkCodeIsOffline($this->instance->errno))
         {
@@ -228,7 +232,7 @@ class Driver extends MysqlBase
      */
     public function getTransactionLevels(): int
     {
-        return $this->transaction->getTransactionLevels();
+        return $this->getTransaction()->getTransactionLevels();
     }
 
     /**
@@ -236,7 +240,7 @@ class Driver extends MysqlBase
      */
     public function inTransaction(): bool
     {
-        return $this->transaction->getTransactionLevels() > 0;
+        return $this->getTransaction()->getTransactionLevels() > 0;
     }
 
     /**
@@ -363,7 +367,7 @@ class Driver extends MysqlBase
         {
             $this->lastSql = $sql;
             $parsedSql = SqlUtil::parseSqlWithColonParams($sql, $sqlParamsMap);
-            $this->lastStmt = $lastStmt = $this->instance->prepare($parsedSql);
+            $lastStmt = $this->instance->prepare($parsedSql);
             if (false === $lastStmt)
             {
                 $errorCode = $this->errorCode();
@@ -374,7 +378,8 @@ class Driver extends MysqlBase
                 }
                 throw new DbException('SQL prepare error [' . $errorCode . '] ' . $errorInfo . \PHP_EOL . 'sql: ' . $sql . \PHP_EOL);
             }
-            $stmt = App::getBean(Statement::class, $this, $lastStmt, $sql, $sqlParamsMap);
+            $this->lastStmt = $lastStmt;
+            $stmt = BeanFactory::newInstance(Statement::class, $this, $lastStmt, $sql, $sqlParamsMap);
             if ($this->isCacheStatement && !isset($stmtCache))
             {
                 StatementManager::setNX($stmt, true);
@@ -390,7 +395,7 @@ class Driver extends MysqlBase
     public function query(string $sql): IMysqlStatement
     {
         $this->lastSql = $sql;
-        $this->lastStmt = $lastStmt = $this->instance->query($sql);
+        $lastStmt = $this->instance->query($sql);
         if (false === $lastStmt)
         {
             $errorCode = $this->errorCode();
@@ -401,8 +406,9 @@ class Driver extends MysqlBase
             }
             throw new DbException('SQL query error: [' . $errorCode . '] ' . $errorInfo . \PHP_EOL . 'sql: ' . $sql . \PHP_EOL);
         }
+        $this->lastStmt = $lastStmt;
 
-        return App::getBean(Statement::class, $this, $lastStmt, $sql);
+        return BeanFactory::newInstance(Statement::class, $this, $lastStmt, $sql);
     }
 
     /**
@@ -410,6 +416,6 @@ class Driver extends MysqlBase
      */
     public function getTransaction(): Transaction
     {
-        return $this->transaction;
+        return $this->transaction ??= new Transaction();
     }
 }

@@ -4,17 +4,15 @@ declare(strict_types=1);
 
 namespace Imi\Swoole\Server\Http;
 
-use Imi\App;
 use Imi\Bean\Annotation\Bean;
 use Imi\Event\Event;
+use Imi\Log\Log;
 use Imi\RequestContext;
 use Imi\Server\Protocol;
-use Imi\Server\ServerManager;
 use Imi\Swoole\Http\Message\SwooleRequest;
 use Imi\Swoole\Http\Message\SwooleResponse;
 use Imi\Swoole\Server\Base;
 use Imi\Swoole\Server\Contract\ISwooleHttpServer;
-use Imi\Swoole\Server\Contract\ISwooleServer;
 use Imi\Swoole\Server\Event\Param\CloseEventParam;
 use Imi\Swoole\Server\Event\Param\RequestEventParam;
 use Imi\Swoole\Server\Event\Param\WorkerStartEventParam;
@@ -58,8 +56,8 @@ class Server extends Base implements ISwooleHttpServer
     protected function createServer(): void
     {
         $config = $this->getServerInitConfig();
-        $this->swooleServer = new \Swoole\Http\Server($config['host'], $config['port'], $config['mode'], $config['sockType']);
-        $this->https = \defined('SWOOLE_SSL') && Bit::has($config['sockType'], \SWOOLE_SSL);
+        $this->swooleServer = new \Swoole\Http\Server($config['host'], (int) $config['port'], (int) $config['mode'], (int) $config['sockType']);
+        $this->https = \defined('SWOOLE_SSL') && Bit::has((int) $config['sockType'], \SWOOLE_SSL);
         $this->http2 = $this->config['configs']['open_http2_protocol'] ?? false;
     }
 
@@ -68,14 +66,10 @@ class Server extends Base implements ISwooleHttpServer
      */
     protected function createSubServer(): void
     {
-        $config = $this->getServerInitConfig();
-        /** @var ISwooleServer $server */
-        $server = ServerManager::getServer('main', ISwooleServer::class);
-        $this->swooleServer = $server->getSwooleServer();
-        $this->swoolePort = $this->swooleServer->addListener($config['host'], $config['port'], $config['sockType']);
+        parent::createSubServer();
         $thisConfig = &$this->config;
         $thisConfig['configs']['open_http_protocol'] ??= true;
-        $this->https = \defined('SWOOLE_SSL') && Bit::has($config['sockType'], \SWOOLE_SSL);
+        $this->https = \defined('SWOOLE_SSL') && isset($thisConfig['sockType']) && Bit::has((int) $thisConfig['sockType'], \SWOOLE_SSL);
         $this->http2 = $thisConfig['configs']['open_http2_protocol'] ?? false;
     }
 
@@ -85,12 +79,10 @@ class Server extends Base implements ISwooleHttpServer
     protected function getServerInitConfig(): array
     {
         return [
-            'host'       => $this->config['host'] ?? '0.0.0.0',
-            'port'       => $this->config['port'] ?? 80,
-            'sockType'   => $this->config['sockType'] ?? \SWOOLE_SOCK_TCP,
-            'mode'       => $this->config['mode'] ?? \SWOOLE_BASE,
-            'ssl'        => $this->config['ssl'] ?? false,
-            'reuse_port' => $this->config['reuse_port'] ?? true,
+            'host'       => $host = $this->config['host'] ?? '0.0.0.0',
+            'port'       => (int) ($this->config['port'] ?? 80),
+            'sockType'   => (int) ($this->config['sockType'] ?? \Imi\Swoole\Util\Swoole::getTcpSockTypeByHost($host)),
+            'mode'       => (int) ($this->config['mode'] ?? \SWOOLE_BASE),
         ];
     }
 
@@ -140,8 +132,7 @@ class Server extends Base implements ISwooleHttpServer
                     // @phpstan-ignore-next-line
                     if (true !== $this->getBean('HttpErrorHandler')->handle($th))
                     {
-                        // @phpstan-ignore-next-line
-                        App::getBean('ErrorLog')->onException($th);
+                        Log::error($th);
                     }
                 }
             });
@@ -164,10 +155,9 @@ class Server extends Base implements ISwooleHttpServer
                         'reactorId'       => $reactorId,
                     ], $this, CloseEventParam::class);
                 }
-                catch (\Throwable $ex)
+                catch (\Throwable $th)
                 {
-                    // @phpstan-ignore-next-line
-                    App::getBean('ErrorLog')->onException($ex);
+                    Log::error($th);
                 }
             });
         }

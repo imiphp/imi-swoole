@@ -4,19 +4,19 @@ declare(strict_types=1);
 
 namespace Imi\Swoole\Server\WebSocket;
 
-use Imi\App;
 use Imi\Bean\Annotation\Bean;
 use Imi\ConnectionContext;
 use Imi\Event\Event;
+use Imi\Log\Log;
 use Imi\RequestContext;
 use Imi\Server\Protocol;
-use Imi\Server\ServerManager;
+use Imi\Server\WebSocket\Enum\NonControlFrameType;
 use Imi\Swoole\Http\Message\SwooleRequest;
 use Imi\Swoole\Http\Message\SwooleResponse;
 use Imi\Swoole\Server\Base;
-use Imi\Swoole\Server\Contract\ISwooleServer;
 use Imi\Swoole\Server\Contract\ISwooleWebSocketServer;
 use Imi\Swoole\Server\Event\Param\CloseEventParam;
+use Imi\Swoole\Server\Event\Param\DisconnectEventParam;
 use Imi\Swoole\Server\Event\Param\HandShakeEventParam;
 use Imi\Swoole\Server\Event\Param\MessageEventParam;
 use Imi\Swoole\Server\Event\Param\RequestEventParam;
@@ -51,6 +51,26 @@ class Server extends Base implements ISwooleWebSocketServer
     private bool $http2 = false;
 
     /**
+     * 同步连接，当连接事件执行完后，才执行 receive 事件.
+     */
+    private bool $syncConnect = true;
+
+    /**
+     * 非控制帧类型.
+     */
+    private int $nonControlFrameType = NonControlFrameType::TEXT;
+
+    /**
+     * {@inheritDoc}
+     */
+    public function __construct(string $name, array $config, bool $isSubServer = false)
+    {
+        parent::__construct($name, $config, $isSubServer);
+        $this->syncConnect = $config['syncConnect'] ?? true;
+        $this->nonControlFrameType = $config['nonControlFrameType'] ?? NonControlFrameType::TEXT;
+    }
+
+    /**
      * {@inheritDoc}
      */
     public function getProtocol(): string
@@ -64,8 +84,8 @@ class Server extends Base implements ISwooleWebSocketServer
     protected function createServer(): void
     {
         $config = $this->getServerInitConfig();
-        $this->swooleServer = new \Swoole\WebSocket\Server($config['host'], $config['port'], $config['mode'], $config['sockType']);
-        $this->https = $this->wss = \defined('SWOOLE_SSL') && Bit::has($config['sockType'], \SWOOLE_SSL);
+        $this->swooleServer = new \Swoole\WebSocket\Server($config['host'], (int) $config['port'], (int) $config['mode'], (int) $config['sockType']);
+        $this->https = $this->wss = \defined('SWOOLE_SSL') && Bit::has((int) $config['sockType'], \SWOOLE_SSL);
         $this->http2 = $this->config['configs']['open_http2_protocol'] ?? false;
     }
 
@@ -74,14 +94,10 @@ class Server extends Base implements ISwooleWebSocketServer
      */
     protected function createSubServer(): void
     {
-        $config = $this->getServerInitConfig();
-        /** @var ISwooleServer $server */
-        $server = ServerManager::getServer('main', ISwooleServer::class);
-        $this->swooleServer = $server->getSwooleServer();
-        $this->swoolePort = $this->swooleServer->addListener($config['host'], $config['port'], $config['sockType']);
+        parent::createSubServer();
         $thisConfig = &$this->config;
         $thisConfig['configs']['open_websocket_protocol'] ??= true;
-        $this->wss = \defined('SWOOLE_SSL') && Bit::has($config['sockType'], \SWOOLE_SSL);
+        $this->wss = \defined('SWOOLE_SSL') && isset($thisConfig['sockType']) && Bit::has($thisConfig['sockType'], \SWOOLE_SSL);
     }
 
     /**
@@ -90,10 +106,10 @@ class Server extends Base implements ISwooleWebSocketServer
     protected function getServerInitConfig(): array
     {
         return [
-            'host'      => $this->config['host'] ?? '0.0.0.0',
-            'port'      => $this->config['port'] ?? 8080,
-            'sockType'  => $this->config['sockType'] ?? \SWOOLE_SOCK_TCP,
-            'mode'      => $this->config['mode'] ?? \SWOOLE_BASE,
+            'host'      => $host = $this->config['host'] ?? '0.0.0.0',
+            'port'      => (int) ($this->config['port'] ?? 8080),
+            'sockType'  => (int) ($this->config['sockType'] ?? \Imi\Swoole\Util\Swoole::getTcpSockTypeByHost($host)),
+            'mode'      => (int) ($this->config['mode'] ?? \SWOOLE_BASE),
         ];
     }
 
@@ -107,12 +123,18 @@ class Server extends Base implements ISwooleWebSocketServer
             $this->on('request', [new BeforeRequest($this), 'handle'], ImiPriority::IMI_MAX);
         });
 
+        $enableSyncConnect = $this->syncConnect && \SWOOLE_BASE === $this->swooleServer->mode;
         $events = $this->config['events'] ?? null;
         if ($event = ($events['handshake'] ?? true))
         {
-            $this->swoolePort->on('handshake', \is_callable($event) ? $event : function (\Swoole\Http\Request $swooleRequest, \Swoole\Http\Response $swooleResponse) {
+            $this->swoolePort->on('handshake', \is_callable($event) ? $event : function (\Swoole\Http\Request $swooleRequest, \Swoole\Http\Response $swooleResponse) use ($enableSyncConnect) {
                 try
                 {
+                    if ($enableSyncConnect)
+                    {
+                        $channelId = 'connection:' . $swooleRequest->fd;
+                        $channel = ChannelContainer::getChannel($channelId);
+                    }
                     if (!Worker::isInited())
                     {
                         ChannelContainer::pop('workerInit');
@@ -135,10 +157,16 @@ class Server extends Base implements ISwooleWebSocketServer
                         'response'  => $response,
                     ], $this, HandShakeEventParam::class);
                 }
-                catch (\Throwable $ex)
+                catch (\Throwable $th)
                 {
-                    // @phpstan-ignore-next-line
-                    App::getBean('ErrorLog')->onException($ex);
+                    Log::error($th);
+                }
+                finally
+                {
+                    if (isset($channel, $channelId))
+                    {
+                        ChannelContainer::removeChannel($channelId);
+                    }
                 }
             });
         }
@@ -150,9 +178,17 @@ class Server extends Base implements ISwooleWebSocketServer
 
         if ($event = ($events['message'] ?? true))
         {
-            $this->swoolePort->on('message', \is_callable($event) ? $event : function (\Swoole\Server $server, \Swoole\WebSocket\Frame $frame) {
+            $this->swoolePort->on('message', \is_callable($event) ? $event : function (\Swoole\Server $server, \Swoole\WebSocket\Frame $frame) use ($enableSyncConnect) {
                 try
                 {
+                    if ($enableSyncConnect)
+                    {
+                        $channelId = 'connection:' . $frame->fd;
+                        if (ChannelContainer::hasChannel($channelId))
+                        {
+                            ChannelContainer::pop($channelId);
+                        }
+                    }
                     if (!Worker::isInited())
                     {
                         ChannelContainer::pop('workerInit');
@@ -166,10 +202,13 @@ class Server extends Base implements ISwooleWebSocketServer
                         'frame'     => $frame,
                     ], $this, MessageEventParam::class);
                 }
-                catch (\Throwable $ex)
+                catch (\Throwable $th)
                 {
                     // @phpstan-ignore-next-line
-                    App::getBean('ErrorLog')->onException($ex);
+                    if (true !== $this->getBean('WebSocketErrorHandler')->handle($th))
+                    {
+                        Log::error($th);
+                    }
                 }
             });
         }
@@ -181,9 +220,17 @@ class Server extends Base implements ISwooleWebSocketServer
 
         if ($event = ($events['close'] ?? true))
         {
-            $this->swoolePort->on('close', \is_callable($event) ? $event : function (\Swoole\Server $server, int $fd, int $reactorId) {
+            $this->swoolePort->on('close', \is_callable($event) ? $event : function (\Swoole\Server $server, int $fd, int $reactorId) use ($enableSyncConnect) {
                 try
                 {
+                    if ($enableSyncConnect)
+                    {
+                        $channelId = 'connection:' . $fd;
+                        if (ChannelContainer::hasChannel($channelId))
+                        {
+                            ChannelContainer::pop($channelId);
+                        }
+                    }
                     if (!Worker::isInited())
                     {
                         ChannelContainer::pop('workerInit');
@@ -197,10 +244,9 @@ class Server extends Base implements ISwooleWebSocketServer
                         'reactorId'       => $reactorId,
                     ], $this, CloseEventParam::class);
                 }
-                catch (\Throwable $ex)
+                catch (\Throwable $th)
                 {
-                    // @phpstan-ignore-next-line
-                    App::getBean('ErrorLog')->onException($ex);
+                    Log::error($th);
                 }
             });
         }
@@ -238,8 +284,7 @@ class Server extends Base implements ISwooleWebSocketServer
                     // @phpstan-ignore-next-line
                     if (true !== $this->getBean('HttpErrorHandler')->handle($th))
                     {
-                        // @phpstan-ignore-next-line
-                        App::getBean('ErrorLog')->onException($th);
+                        Log::error($th);
                     }
                 }
             });
@@ -247,6 +292,31 @@ class Server extends Base implements ISwooleWebSocketServer
         else
         {
             $this->swoolePort->on('request', static function () {
+            });
+        }
+
+        if ($event = ($events['disconnect'] ?? true))
+        {
+            $this->swoolePort->on('disconnect', \is_callable($event) ? $event : function (\Swoole\Server $server, int $fd) {
+                try
+                {
+                    RequestContext::muiltiSet([
+                        'server'        => $this,
+                    ]);
+                    $this->trigger('disconnect', [
+                        'server'        => $this,
+                        'clientId'      => $fd,
+                    ], $this, DisconnectEventParam::class);
+                }
+                catch (\Throwable $th)
+                {
+                    Log::error($th);
+                }
+            });
+        }
+        else
+        {
+            $this->swoolePort->on('disconnect', static function () {
             });
         }
     }
@@ -290,5 +360,13 @@ class Server extends Base implements ISwooleWebSocketServer
     {
         // @phpstan-ignore-next-line
         return $this->getSwooleServer()->push($clientId, $data, $opcode);
+    }
+
+    /**
+     * {@inheritDoc}
+     */
+    public function getNonControlFrameType(): int
+    {
+        return $this->nonControlFrameType;
     }
 }

@@ -4,11 +4,12 @@ declare(strict_types=1);
 
 namespace Imi\Swoole\Server;
 
-use Imi\App;
 use Imi\Event\Event;
+use Imi\Log\Log;
 use Imi\Server\Contract\BaseServer;
 use Imi\Server\Group\Exception\MethodNotFoundException;
 use Imi\Server\Group\TServerGroup;
+use Imi\Server\ServerManager;
 use Imi\Swoole\Process\ProcessManager;
 use Imi\Swoole\Server\Contract\ISwooleServer;
 use Imi\Swoole\Server\Event\Param\FinishEventParam;
@@ -25,7 +26,6 @@ use Imi\Swoole\Server\Event\Param\WorkerStopEventParam;
 use Imi\Util\Imi;
 use Imi\Util\Socket\IPEndPoint;
 use Imi\Worker;
-use InvalidArgumentException;
 use Swoole\Event as SwooleEvent;
 use Swoole\Server;
 use Swoole\Server\Port;
@@ -47,17 +47,13 @@ abstract class Base extends BaseServer implements ISwooleServer
 
     /**
      * swoole 服务器对象
-     *
-     * @var \Swoole\Server|\Swoole\Coroutine\Http\Server
      */
-    protected $swooleServer;
+    protected \Swoole\Server $swooleServer;
 
     /**
      * swoole 监听端口.
-     *
-     * @var \Swoole\Server\Port|\Swoole\Coroutine\Http\Server
      */
-    protected $swoolePort;
+    protected \Swoole\Server\Port $swoolePort;
 
     /**
      * 是否为子服务器.
@@ -81,14 +77,7 @@ abstract class Base extends BaseServer implements ISwooleServer
             $this->swoolePort = $this->swooleServer->ports[0] ?? $this->swooleServer;
         }
 
-        if (empty($this->config['configs']))
-        {
-            $configs = [];
-        }
-        else
-        {
-            $configs = $this->config['configs'];
-        }
+        $configs = $this->config['configs'] ?? [];
 
         if ($isSubServer)
         {
@@ -101,6 +90,15 @@ abstract class Base extends BaseServer implements ISwooleServer
             if (!isset($configs['pid_file']))
             {
                 $configs['pid_file'] = Imi::getRuntimePath('swoole.pid');
+            }
+            if (!isset($configs['log_file']))
+            {
+                $configs['log_file'] = Imi::getRuntimePath('swoole.log');
+            }
+            elseif (false === $configs['log_file'])
+            {
+                // 设为 false 可以禁用 Swoole 错误日志文件
+                unset($configs['log_file']);
             }
             $this->swooleServer->set($configs);
         }
@@ -177,7 +175,7 @@ abstract class Base extends BaseServer implements ISwooleServer
             return false;
         }
 
-        return $server->$methodName(...$args);
+        return $server->{$methodName}(...$args);
     }
 
     /**
@@ -197,11 +195,14 @@ abstract class Base extends BaseServer implements ISwooleServer
                             'server' => $this,
                         ], $this, StartEventParam::class);
                     }
-                    catch (\Throwable $ex)
+                    catch (\Throwable $th)
                     {
-                        // @phpstan-ignore-next-line
-                        App::getBean('ErrorLog')->onException($ex);
+                        Log::error($th);
                         exit(255);
+                    }
+                    finally
+                    {
+                        Log::info('Server start. pid: ' . getmypid());
                     }
                 });
             }
@@ -213,10 +214,13 @@ abstract class Base extends BaseServer implements ISwooleServer
                         'server' => $this,
                     ], $this, ShutdownEventParam::class);
                 }
-                catch (\Throwable $ex)
+                catch (\Throwable $th)
                 {
-                    // @phpstan-ignore-next-line
-                    App::getBean('ErrorLog')->onException($ex);
+                    Log::error($th);
+                }
+                finally
+                {
+                    Log::info('Server shutdown. pid: ' . getmypid());
                 }
             });
 
@@ -232,16 +236,16 @@ abstract class Base extends BaseServer implements ISwooleServer
                         'workerId' => $workerId,
                     ], $this);
                 }
-                catch (\Throwable $ex)
+                catch (\Throwable $th)
                 {
-                    // @phpstan-ignore-next-line
-                    App::getBean('ErrorLog')->onException($ex);
+                    Log::error($th);
                     SwooleEvent::exit();
                 }
                 finally
                 {
                     // worker 初始化
                     Worker::inited();
+                    Log::info('Worker start #' . Worker::getWorkerId() . '. pid: ' . getmypid());
                 }
             });
 
@@ -257,10 +261,13 @@ abstract class Base extends BaseServer implements ISwooleServer
                         'workerId' => $workerId,
                     ], $this);
                 }
-                catch (\Throwable $ex)
+                catch (\Throwable $th)
                 {
-                    // @phpstan-ignore-next-line
-                    App::getBean('ErrorLog')->onException($ex);
+                    Log::error($th);
+                }
+                finally
+                {
+                    Log::info('Worker stop #' . Worker::getWorkerId() . '. pid: ' . getmypid());
                 }
             });
 
@@ -272,10 +279,9 @@ abstract class Base extends BaseServer implements ISwooleServer
                         'workerId'  => $workerId,
                     ], $this, WorkerExitEventParam::class);
                 }
-                catch (\Throwable $ex)
+                catch (\Throwable $th)
                 {
-                    // @phpstan-ignore-next-line
-                    App::getBean('ErrorLog')->onException($ex);
+                    Log::error($th);
                 }
             });
 
@@ -286,11 +292,14 @@ abstract class Base extends BaseServer implements ISwooleServer
                         'server' => $this,
                     ], $this, ManagerStartEventParam::class);
                 }
-                catch (\Throwable $ex)
+                catch (\Throwable $th)
                 {
-                    // @phpstan-ignore-next-line
-                    App::getBean('ErrorLog')->onException($ex);
+                    Log::error($th);
                     exit(255);
+                }
+                finally
+                {
+                    Log::info('Manager start. pid: ' . getmypid());
                 }
             });
 
@@ -301,10 +310,13 @@ abstract class Base extends BaseServer implements ISwooleServer
                         'server' => $this,
                     ], $this, ManagerStopEventParam::class);
                 }
-                catch (\Throwable $ex)
+                catch (\Throwable $th)
                 {
-                    // @phpstan-ignore-next-line
-                    App::getBean('ErrorLog')->onException($ex);
+                    Log::error($th);
+                }
+                finally
+                {
+                    Log::info('Manager stop. pid: ' . getmypid());
                 }
             });
 
@@ -323,10 +335,9 @@ abstract class Base extends BaseServer implements ISwooleServer
                             'task'     => $task,
                         ], $this, TaskEventParam::class);
                     }
-                    catch (\Throwable $ex)
+                    catch (\Throwable $th)
                     {
-                        // @phpstan-ignore-next-line
-                        App::getBean('ErrorLog')->onException($ex);
+                        Log::error($th);
                     }
                 });
             }
@@ -340,10 +351,9 @@ abstract class Base extends BaseServer implements ISwooleServer
                         'data'      => $data,
                     ], $this, FinishEventParam::class);
                 }
-                catch (\Throwable $ex)
+                catch (\Throwable $th)
                 {
-                    // @phpstan-ignore-next-line
-                    App::getBean('ErrorLog')->onException($ex);
+                    Log::error($th);
                 }
             });
 
@@ -356,10 +366,9 @@ abstract class Base extends BaseServer implements ISwooleServer
                         'message'   => $message,
                     ], $this, PipeMessageEventParam::class);
                 }
-                catch (\Throwable $ex)
+                catch (\Throwable $th)
                 {
-                    // @phpstan-ignore-next-line
-                    App::getBean('ErrorLog')->onException($ex);
+                    Log::error($th);
                 }
             });
 
@@ -374,10 +383,9 @@ abstract class Base extends BaseServer implements ISwooleServer
                         'signal'    => $signal,
                     ], $this, WorkerErrorEventParam::class);
                 }
-                catch (\Throwable $ex)
+                catch (\Throwable $th)
                 {
-                    // @phpstan-ignore-next-line
-                    App::getBean('ErrorLog')->onException($ex);
+                    Log::error($th);
                 }
             });
         }
@@ -392,10 +400,25 @@ abstract class Base extends BaseServer implements ISwooleServer
         $clientInfo = $this->swooleServer->getClientInfo($clientId);
         if (false === $clientInfo)
         {
-            throw new InvalidArgumentException(sprintf('Client %s does not exists', $clientId));
+            throw new \InvalidArgumentException(sprintf('Client %s does not exists', $clientId));
         }
 
         return new IPEndPoint($clientInfo['remote_ip'], $clientInfo['remote_port']);
+    }
+
+    /**
+     * {@inheritDoc}
+     */
+    protected function createSubServer(): void
+    {
+        $config = $this->getServerInitConfig();
+        $this->swooleServer = ServerManager::getServer('main', ISwooleServer::class)->getSwooleServer();
+        $port = $this->swooleServer->addListener($config['host'], (int) $config['port'], (int) $config['sockType']);
+        if (false === $port)
+        {
+            throw new \RuntimeException(sprintf('Swoole addListener(%s, %s, %s) failed', $config['host'], $config['port'], $config['sockType']));
+        }
+        $this->swoolePort = $port;
     }
 
     /**
@@ -407,11 +430,6 @@ abstract class Base extends BaseServer implements ISwooleServer
      * 创建 swoole 服务器对象
      */
     abstract protected function createServer(): void;
-
-    /**
-     * 从主服务器监听端口，作为子服务器.
-     */
-    abstract protected function createSubServer(): void;
 
     /**
      * 获取服务器初始化需要的配置.

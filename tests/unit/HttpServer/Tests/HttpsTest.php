@@ -4,9 +4,10 @@ declare(strict_types=1);
 
 namespace Imi\Swoole\Test\HttpServer\Tests;
 
-use function Imi\env;
 use Imi\Util\Http\Consts\StatusCode;
 use Yurun\Util\HttpRequest;
+
+use function Imi\env;
 
 /**
  * @testdox Https
@@ -29,6 +30,7 @@ class HttpsTest extends BaseTest
         $response = $http->get($uri);
         $data = $response->json(true);
         $this->assertEquals($uri, $data['uri'] ?? null);
+        $this->assertEquals($uri, $data['appUri'] ?? null);
     }
 
     /**

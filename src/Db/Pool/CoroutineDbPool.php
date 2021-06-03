@@ -6,6 +6,7 @@ namespace Imi\Swoole\Db\Pool;
 
 use Imi\App;
 use Imi\Db\Pool\DbResource;
+use Imi\Pool\Interfaces\IPoolResource;
 use Imi\Pool\TUriResourceConfig;
 use Imi\Swoole\Pool\BaseAsyncPool;
 
@@ -25,10 +26,18 @@ class CoroutineDbPool extends BaseAsyncPool
     /**
      * {@inheritDoc}
      */
-    protected function createResource(): \Imi\Pool\Interfaces\IPoolResource
+    protected function createResource(): IPoolResource
+    {
+        return $this->createNewResource();
+    }
+
+    /**
+     * {@inheritDoc}
+     */
+    public function createNewResource(): IPoolResource
     {
         $config = $this->getNextResourceConfig();
 
-        return new DbResource($this, App::getBean($config['dbClass'] ?? 'PdoMysqlDriver', $config));
+        return new DbResource($this, App::newInstance($config['dbClass'] ?? 'PdoMysqlDriver', $config));
     }
 }

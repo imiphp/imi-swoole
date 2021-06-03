@@ -4,8 +4,8 @@ declare(strict_types=1);
 
 namespace Imi\Swoole\Pool;
 
-use Imi\App;
 use Imi\Event\Event;
+use Imi\Log\Log;
 use Imi\Pool\BasePool;
 use Imi\Pool\Interfaces\IPoolResource;
 use Imi\Swoole\Util\Coroutine;
@@ -85,38 +85,25 @@ abstract class BaseAsyncPool extends BasePool
      */
     public function getResource(): IPoolResource
     {
-        $selectResult = true;
         $queue = $this->queue;
         $config = $this->config;
         $waitTimeoutFloat = $config->getWaitTimeout() / 1000;
-        if ($this->getFree() <= 0)
+        if ($this->getFree() <= 0 && $this->getCount() < $config->getMaxResources())
         {
-            if ($this->getCount() < $config->getMaxResources())
+            // 没有空闲连接，当前连接数少于最大连接数
+            $this->addResource();
+        }
+        $poolItem = $queue->pop($waitTimeoutFloat);
+        if (!$poolItem)
+        {
+            if (\SWOOLE_CHANNEL_TIMEOUT === $queue->errCode)
             {
-                // 没有空闲连接，当前连接数少于最大连接数
-                $this->addResource();
+                throw new \RuntimeException(sprintf('AsyncPool [%s] getResource timeout', $this->getName()));
             }
             else
             {
-                $selectResult = $queue->pop($waitTimeoutFloat);
-                if (false === $selectResult)
-                {
-                    throw new \RuntimeException(sprintf('AsyncPool [%s] getResource timeout', $this->getName()));
-                }
+                throw new \RuntimeException(sprintf('AsyncPool [%s] getResource failed', $this->getName()));
             }
-        }
-        if (true === $selectResult)
-        {
-            $poolItem = $queue->pop();
-        }
-        else
-        {
-            $poolItem = $selectResult;
-        }
-        /** @var \Imi\Pool\PoolItem|false $poolItem */
-        if (!$poolItem)
-        {
-            throw new \RuntimeException(sprintf('AsyncPool [%s] getResource failed', $this->getName()));
         }
         if (!$poolItem->lock($waitTimeoutFloat))
         {
@@ -125,7 +112,7 @@ abstract class BaseAsyncPool extends BasePool
         $resource = $poolItem->getResource();
         try
         {
-            if ($config->isCheckStateWhenGetResource() && !$resource->checkState())
+            if (!$resource->isOpened() || ($config->isCheckStateWhenGetResource() && !$resource->checkState()))
             {
                 $resource->close();
                 if (!$resource->open())
@@ -187,7 +174,7 @@ abstract class BaseAsyncPool extends BasePool
         $resource = $poolItem->getResource();
         try
         {
-            if (($this->config->isCheckStateWhenGetResource() && !$resource->checkState()))
+            if (!$resource->isOpened() || ($this->config->isCheckStateWhenGetResource() && !$resource->checkState()))
             {
                 $resource->close();
                 if (!$resource->open())
@@ -271,7 +258,7 @@ abstract class BaseAsyncPool extends BasePool
                 $this->gcTimerId = Timer::tick($gcInterval * 1000, [$this, 'gc']);
                 Event::on(['IMI.MAIN_SERVER.WORKER.EXIT', 'IMI.PROCESS.END'], function () {
                     $this->stopAutoGC();
-                }, \Imi\Util\ImiPriority::IMI_MIN);
+                }, \Imi\Util\ImiPriority::IMI_MIN + 1);
             }
         }
     }
@@ -299,10 +286,10 @@ abstract class BaseAsyncPool extends BasePool
         try
         {
             $this->heartbeatRunning = true;
-            $hasGC = false;
             $pool = &$this->pool;
             if ($pool)
             {
+                $hasGC = false;
                 foreach ($pool as $key => $item)
                 {
                     if ($item->lock(0.001))
@@ -316,9 +303,7 @@ abstract class BaseAsyncPool extends BasePool
                         catch (\Throwable $th)
                         {
                             $available = false;
-                            /** @var \Imi\Log\ErrorLog $errorLog */
-                            $errorLog = App::getBean('ErrorLog');
-                            $errorLog->onException($th);
+                            Log::error($th);
                         }
                         finally
                         {
@@ -335,11 +320,11 @@ abstract class BaseAsyncPool extends BasePool
                         }
                     }
                 }
-            }
-            if ($hasGC)
-            {
-                $this->fillMinResources();
-                $this->buildQueue();
+                if ($hasGC)
+                {
+                    $this->fillMinResources();
+                    $this->buildQueue();
+                }
             }
         }
         finally
@@ -358,7 +343,7 @@ abstract class BaseAsyncPool extends BasePool
             $this->heartbeatTimerId = Timer::tick((int) ($heartbeatInterval * 1000), [$this, 'heartbeat']);
             Event::on(['IMI.MAIN_SERVER.WORKER.EXIT', 'IMI.PROCESS.END'], function () {
                 $this->stopHeartbeat();
-            }, \Imi\Util\ImiPriority::IMI_MIN);
+            }, \Imi\Util\ImiPriority::IMI_MIN + 1);
         }
     }
 

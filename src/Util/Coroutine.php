@@ -6,9 +6,7 @@ namespace Imi\Swoole\Util;
 
 trait TCoroutine
 {
-    private function __construct()
-    {
-    }
+    use \Imi\Util\Traits\TStaticClass;
 
     /**
      * 判断当前是否在协程中运行.
@@ -34,8 +32,9 @@ trait TCoroutine
 // @phpstan-ignore-next-line
 if (\SWOOLE_VERSION_ID >= 50000)
 {
-    include __DIR__ . '/Coroutine.swoole-5';
+    include __DIR__ . '/Coroutine.typed.php';
 }
+// @phpstan-ignore-next-line
 else
 {
     class Coroutine extends \Swoole\Coroutine

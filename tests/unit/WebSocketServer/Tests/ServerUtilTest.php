@@ -226,6 +226,22 @@ class ServerUtilTest extends BaseTest
                 $recvResult = $client2->recv();
                 $this->assertEquals($dataStr, $recvResult, $client2->getErrorCode() . '-' . $client2->getErrorMessage());
             }
+
+            $response = $http->get($this->host . 'serverUtil/sendToGroupTask', ['group' => $group]);
+            $this->assertEquals([
+                'groupClientIdCount'   => 2,
+                'sendToGroup'          => 2,
+                'sendRawToGroup'       => 2,
+            ], $response->json(true));
+
+            for ($i = 0; $i < 2; ++$i)
+            {
+                $recvResult = $client1->recv();
+                $this->assertEquals($dataStr, $recvResult, $client1->getErrorCode() . '-' . $client1->getErrorMessage());
+                $recvResult = $client2->recv();
+                $this->assertEquals($dataStr, $recvResult, $client2->getErrorCode() . '-' . $client2->getErrorMessage());
+            }
+
             $client1->close();
             $client2->close();
         }, null, 3);
@@ -362,12 +378,49 @@ class ServerUtilTest extends BaseTest
             while (1 !== ($data['workerId'] ?? null));
             // @phpstan-ignore-next-line
             $response = $http3->post($this->host . 'serverUtil/close', ['clientId' => $recvData1['clientId'], 'flag' => $flag]);
-            $this->assertEquals([
-                'clientId'   => 1,
-                'flag'       => 1,
-            ], $response->json(true));
+            $data = $response->json(true);
+            $this->assertGreaterThan(0, $data['clientId']);
+            $this->assertGreaterThan(0, $data['flag']);
             $this->assertEquals('', $client1->recv(1));
             $this->assertEquals('', $client2->recv(1));
+        }, null, 3);
+    }
+
+    public function testGetConnectionCount(): void
+    {
+        $this->go(function () {
+            do
+            {
+                echo 'try get workerId 0', \PHP_EOL;
+                $http1 = new HttpRequest();
+                $response = $http1->header('Connection', 'keep-alive')->get($this->host . 'serverUtil/info');
+            }
+            while (0 !== $response->json(true)['workerId']);
+            $response = $http1->get($this->host . 'serverUtil/getConnectionCount');
+            $this->assertEquals([
+                'count' => 1,
+            ], $response->json(true));
+
+            do
+            {
+                echo 'try get workerId 1', \PHP_EOL;
+                $http2 = new HttpRequest();
+                $response = $http2->header('Connection', 'keep-alive')->get($this->host . 'serverUtil/info');
+            }
+            while (1 !== $response->json(true)['workerId']);
+            $response = $http2->get($this->host . 'serverUtil/getConnectionCount');
+            $this->assertEquals([
+                'count' => 2,
+            ], $response->json(true));
+
+            unset($http2);
+            sleep(1);
+
+            $http1 = new HttpRequest();
+            $response = $http1->header('Connection', 'keep-alive')->get($this->host . 'serverUtil/getConnectionCount');
+            $this->assertEquals([
+                'count' => 1,
+            ], $response->json(true));
         }, null, 3);
     }
 }

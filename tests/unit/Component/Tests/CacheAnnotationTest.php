@@ -5,9 +5,9 @@ declare(strict_types=1);
 namespace Imi\Swoole\Test\Component\Tests;
 
 use Imi\App;
+use Imi\Swoole\Util\Coroutine;
 use Imi\Test\BaseTest;
 use PHPUnit\Framework\Assert;
-use Swoole\Coroutine;
 
 /**
  * @testdox Cache Annotation
@@ -19,7 +19,7 @@ class CacheAnnotationTest extends BaseTest
      */
     public function testCacheableTTL(): void
     {
-        $this->go(function () {
+        $this->go(static function () {
             /** @var \Imi\Swoole\Test\Component\Cache\Classes\TestCacheAnnotation $test */
             $test = App::getBean('TestCacheAnnotation');
             $id = 1;
@@ -46,7 +46,7 @@ class CacheAnnotationTest extends BaseTest
 
     public function testCacheableLock(): void
     {
-        $this->go(function () {
+        $this->go(static function () {
             /** @var \Imi\Swoole\Test\Component\Cache\Classes\TestCacheAnnotation $test */
             $test = App::getBean('TestCacheAnnotation');
             $id = 1;
@@ -74,7 +74,7 @@ class CacheAnnotationTest extends BaseTest
             {
                 $throwables[] = null;
                 $index = $i;
-                Coroutine::create(function () use (&$throwables, $index, $test, $id, $channel) {
+                Coroutine::create(static function () use (&$throwables, $index, $test, $id, $channel) {
                     try
                     {
                         $result2 = $test->testCacheableLock($id);

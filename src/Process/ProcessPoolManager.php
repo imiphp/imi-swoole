@@ -7,18 +7,15 @@ namespace Imi\Swoole\Process;
 use Imi\App;
 use Imi\Event\Event;
 use Imi\Swoole\Util\Imi;
-use RuntimeException;
 
 /**
  * 进程池管理类.
  */
 class ProcessPoolManager
 {
-    private static array $map = [];
+    use \Imi\Util\Traits\TStaticClass;
 
-    private function __construct()
-    {
-    }
+    private static array $map = [];
 
     public static function getMap(): array
     {
@@ -62,7 +59,7 @@ class ProcessPoolManager
         $processPoolOption = self::get($name);
         if (null === $processPoolOption)
         {
-            throw new RuntimeException(sprintf('Not found process pool %s', $name));
+            throw new \RuntimeException(sprintf('Not found process pool %s', $name));
         }
         if (null === $workerNum)
         {
@@ -87,7 +84,7 @@ class ProcessPoolManager
             // 随机数播种
             mt_srand();
             \Swoole\Coroutine\run(static function () use ($pool, $workerId, $name, $workerNum, $args, $ipcType, $msgQueueKey, $processPoolOption) {
-                $processInstance = App::getBean($processPoolOption['className'], $args);
+                $processInstance = App::newInstance($processPoolOption['className'], $args);
                 // 进程开始事件
                 Event::trigger('IMI.PROCESS_POOL.PROCESS.BEGIN', [
                     'name'          => $name,

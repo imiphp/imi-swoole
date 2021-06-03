@@ -4,9 +4,9 @@ declare(strict_types=1);
 
 namespace Imi\Swoole\Model;
 
+use Imi\Bean\Annotation\AnnotationManager;
 use Imi\Model\Annotation\MemoryTable;
 use Imi\Model\BaseModel;
-use Imi\Model\ModelManager;
 use Imi\Swoole\Util\MemoryTableManager;
 
 /**
@@ -27,7 +27,7 @@ abstract class MemoryTableModel extends BaseModel
     public static function find(string $key): ?self
     {
         /** @var MemoryTable|null $memoryTableAnnotation */
-        $memoryTableAnnotation = ModelManager::getAnnotation(static::class, MemoryTable::class);
+        $memoryTableAnnotation = AnnotationManager::getClassAnnotations(static::class, MemoryTable::class)[0] ?? null;
         if (null === $memoryTableAnnotation)
         {
             return null;
@@ -51,7 +51,7 @@ abstract class MemoryTableModel extends BaseModel
     public static function select(): array
     {
         /** @var MemoryTable|null $memoryTableAnnotation */
-        $memoryTableAnnotation = ModelManager::getAnnotation(static::class, MemoryTable::class);
+        $memoryTableAnnotation = AnnotationManager::getClassAnnotations(static::class, MemoryTable::class)[0] ?? null;
         if (null === $memoryTableAnnotation)
         {
             return [];
@@ -67,7 +67,7 @@ abstract class MemoryTableModel extends BaseModel
     public function save(): void
     {
         /** @var MemoryTable|null $memoryTableAnnotation */
-        $memoryTableAnnotation = ModelManager::getAnnotation($this, MemoryTable::class);
+        $memoryTableAnnotation = AnnotationManager::getClassAnnotations(static::__getRealClassName(), MemoryTable::class)[0] ?? null;
         if (null === $memoryTableAnnotation)
         {
             return;
@@ -86,7 +86,7 @@ abstract class MemoryTableModel extends BaseModel
     public function delete(): void
     {
         /** @var MemoryTable|null $memoryTableAnnotation */
-        $memoryTableAnnotation = ModelManager::getAnnotation($this, MemoryTable::class);
+        $memoryTableAnnotation = AnnotationManager::getClassAnnotations(static::__getRealClassName(), MemoryTable::class)[0] ?? null;
         if (null === $memoryTableAnnotation)
         {
             return;
@@ -96,13 +96,11 @@ abstract class MemoryTableModel extends BaseModel
 
     /**
      * 批量删除.
-     *
-     * @param string ...$keys
      */
     public static function deleteBatch(string ...$keys): void
     {
         /** @var MemoryTable|null $memoryTableAnnotation */
-        $memoryTableAnnotation = ModelManager::getAnnotation(static::class, MemoryTable::class);
+        $memoryTableAnnotation = AnnotationManager::getClassAnnotations(static::class, MemoryTable::class)[0] ?? null;
         if (null === $memoryTableAnnotation)
         {
             return;
@@ -124,7 +122,7 @@ abstract class MemoryTableModel extends BaseModel
     public static function count(): int
     {
         /** @var MemoryTable|null $memoryTableAnnotation */
-        $memoryTableAnnotation = ModelManager::getAnnotation(static::class, MemoryTable::class);
+        $memoryTableAnnotation = AnnotationManager::getClassAnnotations(static::class, MemoryTable::class)[0] ?? null;
         if (null === $memoryTableAnnotation)
         {
             return 0;
@@ -151,5 +149,19 @@ abstract class MemoryTableModel extends BaseModel
         $this->__key = $key;
 
         return $this;
+    }
+
+    public function __serialize(): array
+    {
+        $result = parent::__serialize();
+        $result['key'] = $this->__key;
+
+        return $result;
+    }
+
+    public function __unserialize(array $data): void
+    {
+        parent::__unserialize($data);
+        ['key' => $this->__key] = $data;
     }
 }
