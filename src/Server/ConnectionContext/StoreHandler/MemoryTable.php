@@ -16,7 +16,7 @@ use Imi\Worker;
 /**
  * 连接上下文存储处理器-MemoryTable.
  *
- * @Bean(name="ConnectionContextMemoryTable", env="swoole")
+ * @Bean(name="ConnectionContextMemoryTable", env="swoole", recursion=false)
  */
 class MemoryTable implements IHandler
 {
@@ -65,8 +65,7 @@ class MemoryTable implements IHandler
         {
             $this->useRedis(function (RedisHandler $redis) {
                 $key = $this->key;
-                $redis->del($key);
-                $keys = [];
+                $keys = (array) $key;
                 $count = 0;
                 foreach ($redis->scanEach($key . ':*') as $key)
                 {
@@ -246,9 +245,9 @@ class MemoryTable implements IHandler
     public function getClientIdsByFlags(array $flags): array
     {
         $result = $this->useRedis(fn (RedisHandler $redis) => $redis->hMget($this->key . ':binder', $flags));
-        foreach ($result as $k                             => $v)
+        foreach ($result as $k => $v)
         {
-            $result[$k] = [$v];
+            $result[$k] = (array) $v;
         }
 
         return $result;

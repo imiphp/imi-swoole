@@ -16,7 +16,7 @@ use Imi\Swoole\Server\Traits\TServerPortInfo;
 use Imi\Util\Imi;
 
 /**
- * @Listener(eventName="IMI.APP.INIT")
+ * @Listener(eventName="IMI.APP.INIT", one=true)
  */
 class AppInit implements IAppInitEventListener
 {
@@ -32,7 +32,7 @@ class AppInit implements IAppInitEventListener
         if ($server)
         {
             $mainSwooleServer = $server->getSwooleServer();
-            if (($serverStart = !$mainSwooleServer->manager_pid))
+            if ($serverStart = !$mainSwooleServer->manager_pid)
             {
                 $this->outputServerInfo();
             }
