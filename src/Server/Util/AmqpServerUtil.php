@@ -7,20 +7,21 @@ namespace Imi\Swoole\Server\Util;
 use Imi\AMQP\Contract\IConsumer;
 use Imi\AMQP\Contract\IPublisher;
 use Imi\AMQP\Message;
-use Imi\Aop\Annotation\Inject;
-use Imi\App;
 use Imi\Bean\Annotation\Bean;
 use Imi\ConnectionContext;
 use Imi\Event\Event;
-use Imi\Log\ErrorLog;
+use Imi\Log\Log;
 use Imi\RequestContext;
+use Imi\Server\Contract\IServer;
 use Imi\Server\DataParser\DataParser;
 use Imi\Worker;
+
+use function Swoole\Coroutine\defer;
 
 if (class_exists(\Imi\AMQP\Main::class))
 {
     /**
-     * @Bean(name="AmqpServerUtil", env="swoole")
+     * @Bean(name="AmqpServerUtil", env="swoole", recursion=false)
      */
     class AmqpServerUtil extends LocalServerUtil
     {
@@ -49,25 +50,16 @@ if (class_exists(\Imi\AMQP\Main::class))
          */
         protected string $publisherClass = 'AmqpServerPublisher';
 
-        /**
-         * @Inject
-         */
-        protected ErrorLog $errorLog;
-
         protected bool $subscribeEnable = true;
 
         protected IConsumer $consumerInstance;
 
-        protected IPublisher $publisherInstance;
-
-        protected string $serverName;
+        protected IServer $server;
 
         public function __init(): void
         {
-            $server = RequestContext::getServer();
-            $this->serverName = $server->getName();
-            $this->consumerInstance = $server->getBean($this->consumerClass);
-            $this->publisherInstance = $server->getBean($this->publisherClass);
+            $this->server = $server = RequestContext::getServer();
+            $this->consumerInstance = $server->getBean($this->consumerClass, $this);
             Event::one('IMI.MAIN_SERVER.WORKER.EXIT', function () {
                 $this->subscribeEnable = false;
             });
@@ -83,7 +75,7 @@ if (class_exists(\Imi\AMQP\Main::class))
             $amqpMessage->setBody($message);
             $amqpMessage->setRoutingKey($routingKey);
 
-            return $this->publisherInstance->publish($amqpMessage);
+            return $this->getPublisherInstance()->publish($amqpMessage);
         }
 
         /**
@@ -124,9 +116,8 @@ if (class_exists(\Imi\AMQP\Main::class))
                 $success = 0;
                 foreach ((array) $flag as $tmpFlag)
                 {
-                    $id = uniqid('', true);
                     if ($this->sendAmqpMessage('sendRawByFlag', [
-                        'messageId'  => $id,
+                        'messageId'  => bin2hex(random_bytes(16)),
                         'flag'       => $tmpFlag,
                         'data'       => $data,
                         'serverName' => $server->getName(),
@@ -169,16 +160,17 @@ if (class_exists(\Imi\AMQP\Main::class))
             if ($server instanceof \Imi\Swoole\Server\WebSocket\Server)
             {
                 $method = 'push';
+                $pushParams = (array) $server->getNonControlFrameType();
             }
             else
             {
                 $method = 'send';
+                $pushParams = [];
             }
             if ($toAllWorkers)
             {
-                $id = uniqid('', true);
                 if ($this->sendAmqpMessage('sendRawToAll', [
-                    'messageId'  => $id,
+                    'messageId'  => bin2hex(random_bytes(16)),
                     'data'       => $data,
                     'serverName' => $server->getName(),
                 ], 'all'))
@@ -195,7 +187,7 @@ if (class_exists(\Imi\AMQP\Main::class))
                     {
                         continue;
                     }
-                    if ($swooleServer->$method($clientId, $data))
+                    if ($swooleServer->{$method}($clientId, $data, ...$pushParams))
                     {
                         ++$success;
                     }
@@ -216,18 +208,19 @@ if (class_exists(\Imi\AMQP\Main::class))
             if ($server instanceof \Imi\Swoole\Server\WebSocket\Server)
             {
                 $method = 'push';
+                $pushParams = (array) $server->getNonControlFrameType();
             }
             else
             {
                 $method = 'send';
+                $pushParams = [];
             }
             if ($toAllWorkers)
             {
                 foreach ($groups as $tmpGroup)
                 {
-                    $id = uniqid('', true);
                     if ($this->sendAmqpMessage('sendRawToGroup', [
-                        'messageId'  => $id,
+                        'messageId'  => bin2hex(random_bytes(16)),
                         'group'      => $tmpGroup,
                         'data'       => $data,
                         'serverName' => $server->getName(),
@@ -246,7 +239,7 @@ if (class_exists(\Imi\AMQP\Main::class))
                     $group = $server->getGroup($tmpGroupName);
                     if ($group)
                     {
-                        $result = $group->$method($data);
+                        $result = $group->{$method}($data, ...$pushParams);
                         foreach ($result as $item)
                         {
                             if ($item)
@@ -273,9 +266,8 @@ if (class_exists(\Imi\AMQP\Main::class))
             {
                 foreach ((array) $flag as $tmpFlag)
                 {
-                    $id = uniqid('', true);
                     if ($this->sendAmqpMessage('closeByFlag', [
-                        'messageId'  => $id,
+                        'messageId'  => bin2hex(random_bytes(16)),
                         'flag'       => $tmpFlag,
                         'serverName' => $server->getName(),
                     ], 'flag.' . $tmpFlag))
@@ -315,20 +307,18 @@ if (class_exists(\Imi\AMQP\Main::class))
             $server = RequestContext::getServer();
             if ($this->subscribeEnable && $server && $server->isLongConnection())
             {
-                imigo(function () {
+                defer(fn () => imigo(function () {
                     try
                     {
                         $this->consumerInstance->run();
                     }
                     catch (\Throwable $th)
                     {
-                        /** @var \Imi\Log\ErrorLog $errorLog */
-                        $errorLog = App::getBean('ErrorLog');
-                        $errorLog->onException($th);
+                        Log::error($th);
                         sleep(1);
                         $this->startSubscribe();
                     }
-                });
+                }));
             }
         }
 
@@ -344,7 +334,15 @@ if (class_exists(\Imi\AMQP\Main::class))
 
         public function getPublisherInstance(): IPublisher
         {
-            return $this->publisherInstance;
+            return RequestContext::use(function (\ArrayObject $context) {
+                $key = static::class . ':' . $this->server->getName() . ':publisherClass';
+                if (isset($context[$key]))
+                {
+                    return $context[$key];
+                }
+
+                return $context[$key] = $this->server->getBean($this->publisherClass, $this);
+            });
         }
 
         public function getAmqpName(): ?string

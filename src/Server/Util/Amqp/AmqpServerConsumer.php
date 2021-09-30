@@ -11,8 +11,8 @@ use Imi\AMQP\Base\BaseConsumer;
 use Imi\AMQP\Contract\IMessage;
 use Imi\AMQP\Enum\ConsumerResult;
 use Imi\AMQP\Pool\AMQPPool;
-use Imi\App;
 use Imi\Bean\Annotation\Bean;
+use Imi\Log\Log;
 use Imi\RequestContext;
 use Imi\Server\Server;
 use Imi\Server\ServerManager;
@@ -26,7 +26,13 @@ if (class_exists(\Imi\AMQP\Main::class))
      */
     class AmqpServerConsumer extends BaseConsumer
     {
-        protected AmqpServerUtil $amqpServerUtil;
+        protected ?AmqpServerUtil $amqpServerUtil;
+
+        public function __construct(?AmqpServerUtil $amqpServerUtil = null)
+        {
+            $this->amqpServerUtil = $amqpServerUtil;
+            parent::__construct();
+        }
 
         /**
          * {@inheritDoc}
@@ -34,7 +40,7 @@ if (class_exists(\Imi\AMQP\Main::class))
         public function initConfig(): void
         {
             /** @var AmqpServerUtil $amqpServerUtil */
-            $amqpServerUtil = $this->amqpServerUtil = RequestContext::getServerBean('AmqpServerUtil');
+            $amqpServerUtil = ($this->amqpServerUtil ??= RequestContext::getServerBean('AmqpServerUtil'));
             $this->exchanges = [$exchangeAnnotation = new Exchange($amqpServerUtil->getExchangeConfig())];
             $queueConfig = $amqpServerUtil->getQueueConfig();
             $queueName = ($queueConfig['name'] .= Worker::getWorkerId());
@@ -97,9 +103,7 @@ if (class_exists(\Imi\AMQP\Main::class))
             }
             catch (\Throwable $th)
             {
-                /** @var \Imi\Log\ErrorLog $errorLog */
-                $errorLog = App::getBean('ErrorLog');
-                $errorLog->onException($th);
+                Log::error($th);
 
                 return ConsumerResult::NACK;
             }
