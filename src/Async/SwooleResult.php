@@ -6,15 +6,34 @@ namespace Imi\Swoole\Async;
 
 use Imi\Async\Contract\IAsyncResult;
 use Imi\Async\Exception\AsyncTimeoutException;
+use Imi\Log\Log;
 use Swoole\Coroutine\Channel;
 
 class SwooleResult implements IAsyncResult
 {
-    private Channel $channel;
+    private ?Channel $channel = null;
+
+    private bool $isGeted = false;
 
     public function __construct(Channel $channel)
     {
         $this->channel = $channel;
+    }
+
+    public function __destruct()
+    {
+        if (!$this->isGeted)
+        {
+            $channel = $this->channel;
+            if (!$channel->isEmpty())
+            {
+                $result = $channel->pop();
+                if (false !== $result && $result['exception'])
+                {
+                    Log::error($result['result']);
+                }
+            }
+        }
     }
 
     /**
@@ -22,6 +41,7 @@ class SwooleResult implements IAsyncResult
      */
     public function get(?float $timeout = null)
     {
+        $this->isGeted = true;
         $channel = $this->channel;
         $result = $channel->pop($timeout ?? -1);
         if (false === $result && \SWOOLE_CHANNEL_TIMEOUT === $channel->errCode)
