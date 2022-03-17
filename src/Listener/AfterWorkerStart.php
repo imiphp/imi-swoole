@@ -15,6 +15,7 @@ use Imi\Server\ServerManager;
 use Imi\Swoole\Server\Event\Listener\IWorkerStartEventListener;
 use Imi\Swoole\Server\Event\Param\WorkerStartEventParam;
 use Imi\Swoole\SwooleWorker;
+use Imi\Swoole\Util\Co\ChannelContainer;
 use Imi\Util\Imi;
 use Imi\Worker;
 
@@ -31,8 +32,7 @@ class AfterWorkerStart implements IWorkerStartEventListener
         // 项目初始化事件
         if (!$e->server->getSwooleServer()->taskworker)
         {
-            $initFlagFile = Imi::getRuntimePath(str_replace('\\', '-', App::getNamespace()) . '.app.init');
-            if (0 === Worker::getWorkerId() && !$this->checkInitFlagFile($initFlagFile))
+            if (0 === Worker::getWorkerId() && !$this->checkInitFlagFile($initFlagFile = Imi::getRuntimePath(str_replace('\\', '-', App::getNamespace()) . '.app.init')))
             {
                 Event::trigger('IMI.APP.INIT', [
                 ], $e->getTarget());
@@ -42,8 +42,6 @@ class AfterWorkerStart implements IWorkerStartEventListener
                 ImiCommand::getOutput()->writeln('<info>App Inited</info>');
             }
         }
-        // worker 初始化
-        Worker::inited();
         foreach (ServerManager::getServers() as $name => $server)
         {
             RequestContext::set('server', $server);
@@ -51,6 +49,12 @@ class AfterWorkerStart implements IWorkerStartEventListener
         }
         $httpRouteInit = new HttpRouteInit();
         $httpRouteInit->handle($e);
+        // worker 初始化
+        Worker::inited();
+        if (ChannelContainer::hasChannel('workerInit'))
+        {
+            ChannelContainer::removeChannel('workerInit');
+        }
     }
 
     /**
@@ -58,6 +62,6 @@ class AfterWorkerStart implements IWorkerStartEventListener
      */
     private function checkInitFlagFile(string $initFlagFile): bool
     {
-        return is_file($initFlagFile) && file_get_contents($initFlagFile) == SwooleWorker::getMasterPid();
+        return is_file($initFlagFile) && filemtime($initFlagFile) >= $_SERVER['REQUEST_TIME'] && file_get_contents($initFlagFile) == SwooleWorker::getMasterPid();
     }
 }
